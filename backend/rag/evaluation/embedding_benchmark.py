@@ -230,12 +230,23 @@ def peak_memory_mb() -> float | None:
                     ("PeakPagefileUsage", ctypes.c_size_t),
                 ]
 
+            # Explicit types are required: without them the
+            # GetCurrentProcess() pseudo-handle is truncated to a
+            # 32-bit int, the call fails and the peak reads as 0.
+            kernel32 = ctypes.WinDLL("kernel32")
+            kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+            psapi = ctypes.WinDLL("psapi")
+            psapi.GetProcessMemoryInfo.argtypes = [
+                wintypes.HANDLE, ctypes.POINTER(Counters), wintypes.DWORD
+            ]
+            psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+
             counters = Counters()
             counters.cb = ctypes.sizeof(Counters)
-            handle = ctypes.windll.kernel32.GetCurrentProcess()
-            ctypes.windll.psapi.GetProcessMemoryInfo(
-                handle, ctypes.byref(counters), counters.cb
-            )
+            if not psapi.GetProcessMemoryInfo(
+                kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb
+            ):
+                return None
             return counters.PeakWorkingSetSize / 1e6
 
         import resource

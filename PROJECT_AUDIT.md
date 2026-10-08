@@ -153,3 +153,33 @@ Static inspection only so far. Runtime verification is limited on this machine: 
 | About page | Works; content describes only 4 routes. |
 | Admin | None exists. |
 | Guest use | Broken (F2). |
+
+---
+
+## 8. Resolution (2026-10-08)
+
+Commits: `c91c7c6` baseline → `c675356` backend → `a5d3199` frontend/admin/cleanup.
+
+| # | Status | What changed |
+|---|---|---|
+| S1 | **Fixed** | Chat requests carry an `image_id` (a `files` row owned by the user); the server resolves the path itself and only inside `backend/uploads/`. `image_path` from clients is ignored. Covered by tests. |
+| S2 | **Fixed** | `/upload/image` and `/voice/transcribe` require login. |
+| S3 | **Fixed** | Upload responses contain IDs, never server paths; files are stored under random names. |
+| S4 | **Fixed** | Generic client messages; global handlers for validation and unhandled errors; details only in server logs. Tool failures are now returned as errors (retry works) instead of being fed to the LLM as content. |
+| S5 | **Fixed** | Server-side limits (`MAX_PDF_MB` 25, `MAX_IMAGE_MB` 10, `MAX_AUDIO_MB` 25; 413 on excess); image bytes verified with Pillow. |
+| S6 | **Fixed** | CORS only for `ALLOWED_ORIGINS` (none by default; frontend is same-origin). Security headers added; `/docs` off when `APP_ENV=production`. |
+| S7 | **Fixed** | supabase-js pinned to 2.117.3 with SRI; Supabase URL/key served from `/config` (env), not hard-coded. |
+| S8 | **Fixed** | `/auth/test` removed. |
+| S9 | **Fixed** | Only http(s) links are rendered from sources and markdown. |
+| F1 | **Fixed** (owner-approved) | Live PDF_RAG uses `retrieve_context`; old `rag/retriever.py` removed. Verified with a live question. |
+| F2 | **Fixed** (owner-approved) | Login required; dead guest code and the call to the missing endpoint removed. |
+| F3 | **Fixed** | All six routes shown in the UI. |
+| F4 | **Fixed** | Ownership set at insert; failed ingestion deletes the partial document. |
+| F5 | Documented | README explains attaching a Render disk for `backend/uploads`. |
+| F6 | Partly | Image analysis shared by both paths (`services/image_analysis.py`); `/chat/stream` still routes inline (works; a full merge into LangGraph streaming is a larger refactor). |
+| F7 | **Fixed** | Status pill polls `/health` every 30 s, paused when the tab is hidden. |
+| F8–F10 | **Fixed** | Placeholder chats/links removed; contextual error states with retry; conversation create sends a JSON body. |
+| E1 | Open (environment) | Local runs need Smart App Control to allow `mmh3.pyd`; Render is unaffected. |
+| E2 | **Fixed** | Git repository with `.gitignore` (secrets, uploads, venv excluded). |
+
+New: admin API + panel, activity logging migration, admin role script, security test suite, README, `.env.example`.
