@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agentic AI - About</title>
+    <link rel="icon" href="/frontend/assets/logo/logo.svg" type="image/svg+xml">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/frontend/style.css">
+    <link rel="stylesheet" href="/frontend/about.css">
+</head>
+<body class="about-page">
+
+    <!-- ============ HEADER ============ -->
+    <header class="header">
+        <div class="header-left">
+            <a href="/" class="brand">
+                <img src="/frontend/assets/logo/logo.svg" alt="Logo" width="28" height="28">
+                <span>Agentic AI</span>
+            </a>
+        </div>
+
+        <nav class="nav">
+            <a href="/" class="nav-link">Chat</a>
+            <a href="/frontend/about.html" class="nav-link active">About</a>
+        </nav>
+
+        <div class="header-right">
+            <div class="status" id="status">
+                <span class="status-dot"></span>
+                <span id="statusText">Checking...</span>
+            </div>
+            <button id="themeToggle" class="icon-btn" aria-label="Toggle theme">
+                <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+                <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+            </button>
+        </div>
+    </header>
+
+    <main class="about">
+
+        <!-- 1. Hero -->
+        <section class="hero">
+            <h1>Agentic AI Chatbot</h1>
+            <p>A LangGraph-powered chatbot that intelligently routes user queries to specialized tools.</p>
+            <a href="/" class="btn-primary">Open Chat</a>
+        </section>
+
+        <!-- 2. Technology Stack -->
+        <section class="section">
+            <h2>Technology Stack</h2>
+            <div class="grid grid-4">
+                <div class="card"><h3>FastAPI</h3><p>Backend API serving the /chat endpoint.</p></div>
+                <div class="card"><h3>LangGraph</h3><p>Graph-based agent orchestration and routing.</p></div>
+                <div class="card"><h3>LangChain</h3><p>LLM and tool integration framework.</p></div>
+                <div class="card"><h3>Groq</h3><p>Fast LLM inference for final answers.</p></div>
+                <div class="card"><h3>Wikipedia</h3><p>Factual and general knowledge lookups.</p></div>
+                <div class="card"><h3>Tavily</h3><p>Web search for current information.</p></div>
+                <div class="card"><h3>arXiv</h3><p>Academic research paper search.</p></div>
+                <div class="card"><h3>Python</h3><p>Core backend language with Pydantic and dotenv.</p></div>
+            </div>
+        </section>
+
+        <!-- 3. Architecture -->
+        <section class="section">
+            <h2>Architecture</h2>
+            <div class="arch">
+                <div class="arch-node">User</div>
+                <div class="arch-arrow">↓</div>
+                <div class="arch-node">FastAPI</div>
+                <div class="arch-arrow">↓</div>
+                <div class="arch-node accent">LangGraph Router</div>
+                <div class="arch-arrow">↓</div>
+                <div class="arch-routes">
+                    <span class="arch-node r-direct">DIRECT</span>
+                    <span class="arch-node r-wikipedia">WIKIPEDIA</span>
+                    <span class="arch-node r-tavily">TAVILY</span>
+                    <span class="arch-node r-arxiv">ARXIV</span>
+                </div>
+                <div class="arch-arrow">↓</div>
+                <div class="arch-node">Groq LLM</div>
+                <div class="arch-arrow">↓</div>
+                <div class="arch-node">Final Response</div>
+            </div>
+        </section>
+
+        <!-- 4. How Routing Works -->
+        <section class="section">
+            <h2>How Routing Works</h2>
+            <p class="lead">The router selects exactly one route for every question.</p>
+            <div class="grid grid-2">
+                <div class="card route-card-about r-direct">
+                    <h3>DIRECT</h3>
+                    <p>For general questions that can be answered using the LLM's existing knowledge.</p>
+                </div>
+                <div class="card route-card-about r-wikipedia">
+                    <h3>WIKIPEDIA</h3>
+                    <p>For factual and historical or general knowledge queries.</p>
+                </div>
+                <div class="card route-card-about r-tavily">
+                    <h3>TAVILY</h3>
+                    <p>For current or web-based information.</p>
+                </div>
+                <div class="card route-card-about r-arxiv">
+                    <h3>ARXIV</h3>
+                    <p>For academic and research-paper queries.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- 5. Features -->
+        <section class="section">
+            <h2>Features</h2>
+            <ul class="features">
+                <li>Intelligent routing</li>
+                <li>Tool-based research</li>
+                <li>LangGraph orchestration</li>
+                <li>Groq LLM integration</li>
+                <li>Real-time chatbot interface</li>
+                <li>Responsive UI</li>
+                <li>Separate specialized routes</li>
+            </ul>
+        </section>
+
+        <!-- 6. Developer -->
+        <section class="section">
+            <h2>Developer</h2>
+            <div class="card dev">
+                <h3>Built as an Agentic AI project</h3>
+                <p>Name: [Your Name]</p>
+                <p>Institution: [Your Institution]</p>
+                <p>GitHub: [Your GitHub Link]</p>
+                <p>Email: [Your Email]</p>
+            </div>
+        </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <span>Agentic AI • LangGraph • LangChain • Groq</span>
+        <span>© 2026 [Your Name]</span>
+    </footer>
+
+    <script src="/frontend/app.js"></script>
+</body>
+</html>

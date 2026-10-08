@@ -1,0 +1,140 @@
+[
+  {
+    "query": "What is this presentation about?",
+    "category": "broad",
+    "relevant_chunks": [
+      0,
+      1,
+      2,
+      4,
+      5
+    ]
+  },
+  {
+    "query": "Who is the author of the presentation?",
+    "category": "specific",
+    "relevant_chunks": [
+      0,
+      29
+    ]
+  },
+  {
+    "query": "What is Flask?",
+    "category": "specific",
+    "relevant_chunks": [
+      1
+    ]
+  },
+  {
+    "query": "What are Flask's dependencies?",
+    "category": "technical",
+    "relevant_chunks": [
+      1
+    ]
+  },
+  {
+    "query": "Which Python versions does Flask run on?",
+    "category": "specific",
+    "relevant_chunks": [
+      1
+    ]
+  },
+  {
+    "query": "Which features does Flask include?",
+    "category": "list",
+    "relevant_chunks": [
+      2
+    ]
+  },
+  {
+    "query": "Which features are missing from Flask?",
+    "category": "list",
+    "relevant_chunks": [
+      3
+    ]
+  },
+  {
+    "query": "How do you install Flask?",
+    "category": "technical",
+    "relevant_chunks": [
+      6
+    ]
+  },
+  {
+    "query": "What are the steps of a Flask application?",
+    "category": "technical",
+    "relevant_chunks": [
+      7,
+      8
+    ]
+  },
+  {
+    "query": "How are dynamic routes defined?",
+    "category": "technical",
+    "relevant_chunks": [
+      9,
+      10
+    ]
+  },
+  {
+    "query": "How are templates rendered in Flask?",
+    "category": "technical",
+    "relevant_chunks": [
+      11
+    ]
+  },
+  {
+    "query": "How is Twitter Bootstrap integrated with Flask?",
+    "category": "section",
+    "relevant_chunks": [
+      12,
+      13,
+      14,
+      15
+    ]
+  },
+  {
+    "query": "How does Flask handle web forms and validation?",
+    "category": "section",
+    "relevant_chunks": [
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22
+    ]
+  },
+  {
+    "query": "How are redirects and user sessions handled?",
+    "category": "section",
+    "relevant_chunks": [
+      23,
+      24
+    ]
+  },
+  {
+    "query": "How should a large Flask application be structured?",
+    "category": "section",
+    "relevant_chunks": [
+      25,
+      27
+    ]
+  },
+  {
+    "query": "What are blueprints?",
+    "category": "specific",
+    "relevant_chunks": [
+      26,
+      27
+    ]
+  },
+  {
+    "query": "Where can I find more resources and documentation about Flask?",
+    "category": "list",
+    "relevant_chunks": [
+      28
+    ]
+  }
+]

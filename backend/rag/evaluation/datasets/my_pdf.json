@@ -1,0 +1,82 @@
+[
+  {
+    "query": "What is this document about?",
+    "relevant_chunks": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+  },
+  {
+    "query": "What is the candidate's name?",
+    "relevant_chunks": [0]
+  },
+  {
+    "query": "What is the candidate's professional profile?",
+    "relevant_chunks": [0]
+  },
+  {
+    "query": "Where did the candidate complete internships?",
+    "relevant_chunks": [0, 3, 11]
+  },
+  {
+    "query": "What internships are mentioned?",
+    "relevant_chunks": [0, 3, 11]
+  },
+  {
+    "query": "What technologies are mentioned?",
+    "relevant_chunks": [0, 1, 3, 4, 5, 6, 7, 8, 10]
+  },
+  {
+    "query": "What technical skills does the candidate have?",
+    "relevant_chunks": [5]
+  },
+  {
+    "query": "Which programming languages are listed?",
+    "relevant_chunks": [5]
+  },
+  {
+    "query": "Which frameworks and libraries are mentioned?",
+    "relevant_chunks": [5, 6, 8, 10]
+  },
+  {
+    "query": "What databases are mentioned?",
+    "relevant_chunks": [5, 6, 8, 10]
+  },
+  {
+    "query": "What projects has the candidate worked on?",
+    "relevant_chunks": [3, 6, 7, 8, 9, 10]
+  },
+  {
+    "query": "What is SmartQuery?",
+    "relevant_chunks": [3, 4, 6, 7]
+  },
+  {
+    "query": "What education does the candidate have?",
+    "relevant_chunks": [5]
+  },
+  {
+    "query": "What are the candidate's achievements?",
+    "relevant_chunks": [11]
+  },
+  {
+    "query": "Does the candidate have experience with AI or LLM technologies?",
+    "relevant_chunks": [3, 4, 5, 6, 7]
+  },
+  {
+    "query": "What backend technologies are mentioned?",
+    "relevant_chunks": [3, 4, 5, 6, 7, 8, 10]
+  },
+  {
+    "query": "What frontend technologies are mentioned?",
+    "relevant_chunks": [5, 6, 8, 10]
+  },
+  {
+    "query": "Which tools and APIs are mentioned?",
+    "relevant_chunks": [5, 6, 8, 10]
+  },
+  {
+    "query": "What kind of developer is the candidate?",
+    "relevant_chunks": [0]
+  },
+  {
+    "query": "Give an overview of the candidate's technical background.",
+    "relevant_chunks": [0, 3, 5, 6, 8, 10]
+  }
+]

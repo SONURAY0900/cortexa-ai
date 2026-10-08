@@ -1,0 +1,151 @@
+[
+  {
+    "query": "इस अध्याय में क्या-क्या है?",
+    "category": "broad",
+    "query_language": "hi",
+    "relevant_chunks": [
+      0,
+      2,
+      3,
+      6,
+      10,
+      12
+    ]
+  },
+  {
+    "query": "What is this chapter about?",
+    "category": "broad",
+    "query_language": "en",
+    "relevant_chunks": [
+      0,
+      2,
+      3,
+      6,
+      10,
+      12
+    ]
+  },
+  {
+    "query": "कविता 'किरन' के कवि कौन हैं?",
+    "category": "specific",
+    "query_language": "hi",
+    "relevant_chunks": [
+      0
+    ]
+  },
+  {
+    "query": "Who wrote the poem Kiran?",
+    "category": "specific",
+    "query_language": "en",
+    "relevant_chunks": [
+      0
+    ]
+  },
+  {
+    "query": "किरन बच्चों को सुलाकर कहाँ जाती है?",
+    "category": "specific",
+    "query_language": "hi",
+    "relevant_chunks": [
+      0,
+      3
+    ]
+  },
+  {
+    "query": "दिन और रात कैसे होते हैं?",
+    "category": "technical",
+    "query_language": "hi",
+    "relevant_chunks": [
+      10
+    ]
+  },
+  {
+    "query": "How are day and night formed according to the chapter?",
+    "category": "technical",
+    "query_language": "en",
+    "relevant_chunks": [
+      10
+    ]
+  },
+  {
+    "query": "Earth के घूमने से दिन और रात कैसे बनते हैं?",
+    "category": "technical",
+    "query_language": "mixed",
+    "relevant_chunks": [
+      10
+    ]
+  },
+  {
+    "query": "Who is Sunita Williams?",
+    "category": "specific",
+    "query_language": "en",
+    "relevant_chunks": [
+      10,
+      11
+    ]
+  },
+  {
+    "query": "Sunita Williams के बारे में क्या बताया गया है?",
+    "category": "specific",
+    "query_language": "mixed",
+    "relevant_chunks": [
+      10,
+      11
+    ]
+  },
+  {
+    "query": "'शाम' के समानार्थी शब्द कौन-से हैं?",
+    "category": "list",
+    "query_language": "hi",
+    "relevant_chunks": [
+      6
+    ]
+  },
+  {
+    "query": "What synonyms for evening are given?",
+    "category": "list",
+    "query_language": "en",
+    "relevant_chunks": [
+      6
+    ]
+  },
+  {
+    "query": "कविता पर कौन-से बहुविकल्पीय प्रश्न पूछे गए हैं?",
+    "category": "list",
+    "query_language": "hi",
+    "relevant_chunks": [
+      2
+    ]
+  },
+  {
+    "query": "Which multiple-choice questions are asked about the poem?",
+    "category": "list",
+    "query_language": "en",
+    "relevant_chunks": [
+      2
+    ]
+  },
+  {
+    "query": "'पेड़ का जादू' कहानी में गिलहरी कैसे आई?",
+    "category": "section",
+    "query_language": "hi",
+    "relevant_chunks": [
+      12
+    ]
+  },
+  {
+    "query": "In the story about the tree, how did the squirrel come?",
+    "category": "section",
+    "query_language": "en",
+    "relevant_chunks": [
+      12
+    ]
+  },
+  {
+    "query": "'पेड़ का जादू' story के लेखक कौन हैं?",
+    "category": "section",
+    "query_language": "mixed",
+    "relevant_chunks": [
+      12
+    ]
+  }
+]

@@ -1,0 +1,32 @@
+fastapi
+uvicorn
+pydantic
+python-dotenv
+
+langchain
+langchain-core
+langchain-community
+langchain-groq
+langgraph
+
+groq
+tavily-python
+
+arxiv
+wikipedia
+
+
+# PostgreSQL / Supabase
+supabase
+psycopg[binary]
+
+# PDF processing
+pypdf
+
+# Embeddings
+fastembed
+
+python-multipart
+pymupdf
+requests
+Pillow

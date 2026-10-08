@@ -1,0 +1,177 @@
+[
+  {
+    "query": "What is this paper about?",
+    "category": "broad",
+    "relevant_chunks": [
+      0,
+      1,
+      6,
+      46,
+      47
+    ]
+  },
+  {
+    "query": "Who are the authors of the paper?",
+    "category": "specific",
+    "relevant_chunks": [
+      0
+    ]
+  },
+  {
+    "query": "What BLEU score does the model achieve on English-to-German translation?",
+    "category": "specific",
+    "relevant_chunks": [
+      1,
+      39
+    ]
+  },
+  {
+    "query": "What BLEU score is achieved on English-to-French translation?",
+    "category": "specific",
+    "relevant_chunks": [
+      2,
+      40
+    ]
+  },
+  {
+    "query": "How are the encoder and decoder structured?",
+    "category": "technical",
+    "relevant_chunks": [
+      11,
+      12,
+      13
+    ]
+  },
+  {
+    "query": "What is scaled dot-product attention?",
+    "category": "technical",
+    "relevant_chunks": [
+      14,
+      15,
+      16,
+      17
+    ]
+  },
+  {
+    "query": "How does multi-head attention work?",
+    "category": "technical",
+    "relevant_chunks": [
+      17,
+      18,
+      19
+    ]
+  },
+  {
+    "query": "In which ways is attention used in the model?",
+    "category": "list",
+    "relevant_chunks": [
+      20,
+      21
+    ]
+  },
+  {
+    "query": "What is the position-wise feed-forward network?",
+    "category": "technical",
+    "relevant_chunks": [
+      22
+    ]
+  },
+  {
+    "query": "How does the model encode position information?",
+    "category": "technical",
+    "relevant_chunks": [
+      24,
+      25,
+      26,
+      27
+    ]
+  },
+  {
+    "query": "Why use self-attention instead of recurrent or convolutional layers?",
+    "category": "section",
+    "relevant_chunks": [
+      27,
+      28,
+      29,
+      30,
+      31,
+      32
+    ]
+  },
+  {
+    "query": "What training data was used?",
+    "category": "specific",
+    "relevant_chunks": [
+      33
+    ]
+  },
+  {
+    "query": "What hardware was used and how long did training take?",
+    "category": "specific",
+    "relevant_chunks": [
+      7,
+      34,
+      39
+    ]
+  },
+  {
+    "query": "Which optimizer and learning rate schedule were used?",
+    "category": "technical",
+    "relevant_chunks": [
+      34,
+      35
+    ]
+  },
+  {
+    "query": "What regularization techniques were used during training?",
+    "category": "list",
+    "relevant_chunks": [
+      35,
+      36,
+      38
+    ]
+  },
+  {
+    "query": "What model variations were tested and what did they show?",
+    "category": "section",
+    "relevant_chunks": [
+      42,
+      43,
+      44,
+      45,
+      46
+    ]
+  },
+  {
+    "query": "What are the conclusions and future work?",
+    "category": "section",
+    "relevant_chunks": [
+      46,
+      47,
+      48
+    ]
+  },
+  {
+    "query": "What are the limitations of recurrent models?",
+    "category": "specific",
+    "relevant_chunks": [
+      5,
+      6
+    ]
+  },
+  {
+    "query": "Which previous models are compared in the results table?",
+    "category": "list",
+    "relevant_chunks": [
+      37,
+      38
+    ]
+  },
+  {
+    "query": "Where is the code available?",
+    "category": "specific",
+    "relevant_chunks": [
+      48
+    ]
+  }
+]

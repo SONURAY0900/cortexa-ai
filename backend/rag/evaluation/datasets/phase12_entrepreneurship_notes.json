@@ -1,0 +1,136 @@
+[
+  {
+    "query": "What is this document about?",
+    "category": "broad",
+    "relevant_chunks": [
+      0,
+      8,
+      11,
+      14
+    ]
+  },
+  {
+    "query": "What is entrepreneurship?",
+    "category": "specific",
+    "relevant_chunks": [
+      0
+    ]
+  },
+  {
+    "query": "What is intrapreneurship?",
+    "category": "specific",
+    "relevant_chunks": [
+      1
+    ]
+  },
+  {
+    "query": "What are the types of entrepreneurs?",
+    "category": "list",
+    "relevant_chunks": [
+      1,
+      2,
+      3,
+      4
+    ]
+  },
+  {
+    "query": "What is a social entrepreneur?",
+    "category": "specific",
+    "relevant_chunks": [
+      3
+    ]
+  },
+  {
+    "query": "What are the characteristics of entrepreneurship?",
+    "category": "list",
+    "relevant_chunks": [
+      4
+    ]
+  },
+  {
+    "query": "Why is entrepreneurship important?",
+    "category": "list",
+    "relevant_chunks": [
+      4,
+      5
+    ]
+  },
+  {
+    "query": "What traits and skills does an entrepreneur need?",
+    "category": "list",
+    "relevant_chunks": [
+      6
+    ]
+  },
+  {
+    "query": "What motivates people to start a business?",
+    "category": "specific",
+    "relevant_chunks": [
+      6
+    ]
+  },
+  {
+    "query": "How are opportunities converted into reality?",
+    "category": "section",
+    "relevant_chunks": [
+      9
+    ]
+  },
+  {
+    "query": "What are the steps to set up a small enterprise?",
+    "category": "list",
+    "relevant_chunks": [
+      9
+    ]
+  },
+  {
+    "query": "What factors affect the choice of business location?",
+    "category": "list",
+    "relevant_chunks": [
+      10
+    ]
+  },
+  {
+    "query": "How are MSMEs classified?",
+    "category": "technical",
+    "relevant_chunks": [
+      11
+    ]
+  },
+  {
+    "query": "What is working capital management?",
+    "category": "specific",
+    "relevant_chunks": [
+      12
+    ]
+  },
+  {
+    "query": "Which government organizations support small businesses?",
+    "category": "list",
+    "relevant_chunks": [
+      13
+    ]
+  },
+  {
+    "query": "What incentives and subsidies are available?",
+    "category": "specific",
+    "relevant_chunks": [
+      13
+    ]
+  },
+  {
+    "query": "What is the Industrial Policy of 1991?",
+    "category": "technical",
+    "relevant_chunks": [
+      10,
+      11
+    ]
+  },
+  {
+    "query": "What does sickness of small-scale industries mean?",
+    "category": "section",
+    "relevant_chunks": [
+      14
+    ]
+  }
+]

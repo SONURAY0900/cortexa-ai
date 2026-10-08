@@ -1,0 +1,196 @@
+[
+  {
+    "query": "ଏହି ପୁସ୍ତକ କେଉଁ ବିଷୟରେ?",
+    "category": "broad",
+    "query_language": "or",
+    "relevant_chunks": [
+      5,
+      6,
+      7,
+      19
+    ]
+  },
+  {
+    "query": "What is this book about?",
+    "category": "broad",
+    "query_language": "en",
+    "relevant_chunks": [
+      5,
+      6,
+      7,
+      19
+    ]
+  },
+  {
+    "query": "ଉଦ୍ଧବ ସନ୍ଦେଶର ମୂଳ ଲେଖକ କିଏ?",
+    "category": "specific",
+    "query_language": "or",
+    "relevant_chunks": [
+      0,
+      1,
+      2,
+      5,
+      19
+    ]
+  },
+  {
+    "query": "Who is the original author of Uddhava Sandesh?",
+    "category": "specific",
+    "query_language": "en",
+    "relevant_chunks": [
+      0,
+      1,
+      2,
+      5,
+      19
+    ]
+  },
+  {
+    "query": "ଏହି book ର Odia translator କିଏ?",
+    "category": "specific",
+    "query_language": "mixed",
+    "relevant_chunks": [
+      0,
+      1,
+      2,
+      13,
+      19,
+      25,
+      26
+    ]
+  },
+  {
+    "query": "In which language was the book originally written?",
+    "category": "specific",
+    "query_language": "en",
+    "relevant_chunks": [
+      0,
+      1,
+      6,
+      7,
+      19,
+      26
+    ]
+  },
+  {
+    "query": "ପୁସ୍ତକରେ କେଉଁ କେଉଁ ଅଧ୍ୟାୟ ଅଛି?",
+    "category": "list",
+    "query_language": "or",
+    "relevant_chunks": [
+      27,
+      28,
+      29
+    ]
+  },
+  {
+    "query": "What are the chapters of this book?",
+    "category": "list",
+    "query_language": "en",
+    "relevant_chunks": [
+      27,
+      28,
+      29
+    ]
+  },
+  {
+    "query": "Where and when did Mahanambrata Brahmachari receive his doctorate?",
+    "category": "specific",
+    "query_language": "en",
+    "relevant_chunks": [
+      5,
+      6,
+      7
+    ]
+  },
+  {
+    "query": "ପୁସ୍ତକଟି କେବେ ଓ କେଉଁଠାରେ ପ୍ରକାଶିତ ହୋଇଥିଲା?",
+    "category": "specific",
+    "query_language": "or",
+    "relevant_chunks": [
+      2
+    ]
+  },
+  {
+    "query": "ଚିତ୍ରଜଳ୍ପ କ'ଣ ଏବଂ ଶ୍ରୀରାଧା କେତୋଟି ଶ୍ଳୋକ କହିଥିଲେ?",
+    "category": "technical",
+    "query_language": "or",
+    "relevant_chunks": [
+      242,
+      252
+    ]
+  },
+  {
+    "query": "What is Chitrajalpa and how many verses did Radha speak?",
+    "category": "technical",
+    "query_language": "en",
+    "relevant_chunks": [
+      242,
+      252
+    ]
+  },
+  {
+    "query": "Chitrajalpa ର ପ୍ରଥମ ଭେଦ prajalpa ର ଲକ୍ଷଣ କ'ଣ?",
+    "category": "technical",
+    "query_language": "mixed",
+    "relevant_chunks": [
+      262
+    ]
+  },
+  {
+    "query": "ଉଦ୍ଧବ ବୃନ୍ଦାବନରେ ଗୁଳ୍ମଲତା ହେବାକୁ କାହିଁକି ଇଚ୍ଛା କଲେ?",
+    "category": "section",
+    "query_language": "or",
+    "relevant_chunks": [
+      415,
+      431,
+      436
+    ]
+  },
+  {
+    "query": "Why did Uddhava wish to become a creeper or shrub in Vrindavan?",
+    "category": "section",
+    "query_language": "en",
+    "relevant_chunks": [
+      415,
+      431,
+      436
+    ]
+  },
+  {
+    "query": "What happened when Uddhava returned to Mathura?",
+    "category": "section",
+    "query_language": "en",
+    "relevant_chunks": [
+      450,
+      451,
+      452,
+      453,
+      454,
+      456
+    ]
+  },
+  {
+    "query": "Uddhava Mathura ଫେରିବା ପରେ Krishna କ'ଣ କଲେ?",
+    "category": "section",
+    "query_language": "mixed",
+    "relevant_chunks": [
+      450,
+      451,
+      452,
+      453
+    ]
+  },
+  {
+    "query": "How long did Uddhava stay in Vraja?",
+    "category": "specific",
+    "query_language": "en",
+    "relevant_chunks": [
+      396,
+      397,
+      401,
+      436,
+      450,
+      451
+    ]
+  }
+]
