@@ -8,8 +8,7 @@ from agents.arxiv_agent import arxiv_agent
 
 from agents.rag_agent import rag_agent
 
-from agents.ocr_agent import ocr_agent
-from agents.vision_agent import vision_agent
+from services.image_analysis import analyze_image
 
 
 # ============================================================
@@ -93,24 +92,6 @@ def wikipedia_node(state: ChatState):
     try:
 
         result = wikipedia_agent(query)
-
-        # ----------------------------------------------------
-        # DEBUG
-        # ----------------------------------------------------
-
-        print(
-            "\n================ WIKIPEDIA DEBUG ================"
-        )
-
-        print("WIKIPEDIA RESULT:")
-        print(result)
-
-        print("\nWIKIPEDIA SOURCES:")
-        print(result.get("sources", []))
-
-        print(
-            "==================================================\n"
-        )
 
         return {
             "tool_result": result.get(
@@ -244,8 +225,7 @@ def rag_node(state: ChatState):
 
         result = rag_agent(
             query=query,
-            document_id=document_id,
-            match_count=5
+            document_id=document_id
         )
 
         return {
@@ -278,13 +258,10 @@ def image_node(state: ChatState):
 
     query = state["query"]
 
+    # Server-resolved path set by the API after the ownership check.
     image_path = state.get(
         "image_path"
     )
-
-    # --------------------------------------------------------
-    # Make sure an image is actually attached
-    # --------------------------------------------------------
 
     if not image_path:
 
@@ -300,107 +277,14 @@ def image_node(state: ChatState):
 
     try:
 
-        print(
-            "\n================ IMAGE ANALYSIS ================"
-        )
-
-        print(
-            f"Image path: {image_path}"
-        )
-
-        # ----------------------------------------------------
-        # OCR
-        # ----------------------------------------------------
-
-        print("\n[IMAGE] Running OCR...")
-
-        ocr_result = ocr_agent(
-            image_path=image_path,
-            query=query
-        )
-
-        ocr_text = ocr_result.get(
-            "ocr_text",
-            ""
-        )
-
-        ocr_error = ocr_result.get(
-            "error",
-            ""
-        )
-
-        print(
-            f"[IMAGE] OCR completed. "
-            f"Characters: {len(ocr_text)}"
-        )
-
-        # ----------------------------------------------------
-        # Vision
-        # ----------------------------------------------------
-
-        print("\n[IMAGE] Running Vision...")
-
-        vision_result = vision_agent(
-            image_path=image_path,
-            query=query
-        )
-
-        vision_answer = vision_result.get(
-            "answer",
-            ""
-        )
-
-        vision_error = vision_result.get(
-            "error",
-            ""
-        )
-
-        print(
-            "[IMAGE] Vision completed."
-        )
-
-        print(
-            "================================================\n"
-        )
-
-        # ----------------------------------------------------
-        # Handle OCR + Vision errors
-        # ----------------------------------------------------
-
-        errors = []
-
-        if ocr_error:
-            errors.append(
-                f"OCR error: {ocr_error}"
-            )
-
-        if vision_error:
-            errors.append(
-                f"Vision error: {vision_error}"
-            )
-
-        combined_error = "\n".join(errors)
-
-        # ----------------------------------------------------
-        # Combine OCR + Vision information
-        # ----------------------------------------------------
-
-        tool_result = f"""
-        IMAGE ANALYSIS RESULT
-
-        OCR TEXT:
-        {ocr_text}
-
-        VISION ANALYSIS:
-        {vision_answer}
-       """
+        result = analyze_image(image_path, query)
 
         return {
-            "tool_result": tool_result,
-            "image_ocr_text": ocr_text,
-            "image_vision_result": vision_answer,
+            "tool_result": result["tool_result"],
+            "image_ocr_text": result["ocr_text"],
+            "image_vision_result": result["vision_answer"],
             "sources": [],
-            "error": combined_error
+            "error": result["error"]
         }
 
     except Exception as e:
@@ -412,6 +296,7 @@ def image_node(state: ChatState):
             "sources": [],
             "error": f"Image analysis error: {str(e)}"
         }
+
 
 # ============================================================
 # FINAL LLM NODE

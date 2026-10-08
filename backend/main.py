@@ -1,18 +1,23 @@
-from pathlib import Path
+import io
 import json
-import uuid
+import queue
+import threading
+from pathlib import Path
 
 from fastapi import (
     FastAPI,
     UploadFile,
     File,
     HTTPException,
-    Depends
+    Depends,
+    Request
 )
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from PIL import Image, UnidentifiedImageError
+from pydantic import BaseModel, Field
 
 from graph.workflow import chat_graph
 from graph.router import route_query
@@ -22,71 +27,100 @@ from agents.wikipedia_agent import wikipedia_agent
 from agents.tavily_agent import tavily_agent
 from agents.arxiv_agent import arxiv_agent
 from agents.rag_agent import rag_agent
-from agents.ocr_agent import ocr_agent
-from agents.vision_agent import vision_agent
 from agents.speech_agent import speech_to_text_agent
 
+from admin.routes import router as admin_router
+from auth.supabase_auth import get_current_user, is_admin
+from config.settings import (
+    ALLOWED_ORIGINS,
+    APP_ENV,
+    APP_VERSION,
+    MAX_AUDIO_MB,
+    MAX_IMAGE_MB,
+    MAX_PDF_MB,
+    SUPABASE_PUBLISHABLE_KEY,
+    SUPABASE_URL,
+)
+from database.connection import supabase
 from rag.pipeline import ingest_pdf
+from services.activity import log_activity
+from services.image_analysis import analyze_image
+from services.storage import (
+    IMAGE_UPLOAD_DIR,
+    PDF_UPLOAD_DIR,
+    delete_stored_file,
+    resolve_inside_uploads,
+    safe_display_name,
+    save_upload,
+)
 from utils.logger import log_agent
-from auth.supabase_auth import get_current_user
-from config.supabase_client import get_supabase
 
 # ============================================================
 # FASTAPI APP
 # ============================================================
 
+IS_PRODUCTION = APP_ENV.lower() == "production"
+
 app = FastAPI(
     title="LangGraph AI Chatbot",
     description="Full-stack AI chatbot using LangGraph, LangChain and Groq",
-    version="1.0.0"
+    version=APP_VERSION,
+    # Interactive API docs are disabled in production.
+    docs_url=None if IS_PRODUCTION else "/docs",
+    redoc_url=None,
+    openapi_url=None if IS_PRODUCTION else "/openapi.json",
 )
 
 
 # ============================================================
-# CORS
+# CORS / SECURITY HEADERS / ERRORS
 # ============================================================
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# The frontend is served by this app (same origin), so cross-origin
+# access is only enabled for origins listed in ALLOWED_ORIGINS.
+if ALLOWED_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=ALLOWED_ORIGINS,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "DELETE"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
 
 
-# ============================================================
-# PROJECT DIRECTORIES
-# ============================================================
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    return response
 
-BACKEND_DIR = Path(__file__).resolve().parent
-PROJECT_DIR = BACKEND_DIR.parent
 
-FRONTEND_DIR = PROJECT_DIR / "frontend"
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=422,
+        content={"detail": "The request is invalid. Please check the input and try again."},
+    )
 
-PDF_UPLOAD_DIR = BACKEND_DIR / "uploads" / "pdfs"
-IMAGE_UPLOAD_DIR = BACKEND_DIR / "uploads" / "images"
-AUDIO_UPLOAD_DIR = BACKEND_DIR / "uploads" / "audio"
 
-PDF_UPLOAD_DIR.mkdir(
-    parents=True,
-    exist_ok=True
-)
-
-IMAGE_UPLOAD_DIR.mkdir(
-    parents=True,
-    exist_ok=True
-)
-
-AUDIO_UPLOAD_DIR.mkdir(
-    parents=True,
-    exist_ok=True
-)
+@app.exception_handler(Exception)
+async def unhandled_error_handler(request: Request, exc: Exception):
+    # Details go to the server log only; clients never see internals.
+    log_agent("SYSTEM", f"Unhandled error on {request.url.path}: {exc!r}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Something went wrong. Please try again."},
+    )
 
 
 # ============================================================
 # FRONTEND
 # ============================================================
+
+BACKEND_DIR = Path(__file__).resolve().parent
+FRONTEND_DIR = BACKEND_DIR.parent / "frontend"
 
 app.mount(
     "/frontend",
@@ -97,19 +131,38 @@ app.mount(
 
 @app.get("/")
 def home():
-    return FileResponse(
-        FRONTEND_DIR / "index.html"
-    )
+    return FileResponse(FRONTEND_DIR / "index.html")
+
+
+@app.get("/admin")
+def admin_page():
+    # The page is static; every admin API call is authorized server-side.
+    return FileResponse(FRONTEND_DIR / "admin.html")
 
 
 # ============================================================
-# HEALTH CHECK
+# HEALTH / PUBLIC CONFIG
 # ============================================================
 
 @app.get("/health")
 def health_check():
+    return {"status": "healthy"}
+
+
+@app.get("/config")
+def public_config():
+    """
+    Public values the browser needs to start Supabase Auth.
+    The publishable key is public by design; no secret is returned.
+    """
     return {
-        "status": "healthy"
+        "supabase_url": SUPABASE_URL,
+        "supabase_publishable_key": SUPABASE_PUBLISHABLE_KEY,
+        "limits": {
+            "pdf_mb": MAX_PDF_MB,
+            "image_mb": MAX_IMAGE_MB,
+            "audio_mb": MAX_AUDIO_MB,
+        },
     }
 
 
@@ -121,31 +174,15 @@ def health_check():
 def get_me(user=Depends(get_current_user)):
     """
     Return the currently authenticated Supabase user.
-
-    Frontend sends:
-        Authorization: Bearer <supabase_access_token>
     """
     return {
         "success": True,
         "user": {
             "id": user.id,
             "email": user.email,
-            "created_at": user.created_at
+            "created_at": user.created_at,
+            "is_admin": is_admin(user),
         }
-    }
-
-
-@app.get("/auth/test")
-def auth_test(user=Depends(get_current_user)):
-    """
-    Protected endpoint used to verify that the
-    Supabase session token is accepted by FastAPI.
-    """
-    return {
-        "success": True,
-        "message": "Authentication successful.",
-        "user_id": user.id,
-        "email": user.email
     }
 
 
@@ -154,25 +191,20 @@ def auth_test(user=Depends(get_current_user)):
 # ============================================================
 
 class ChatRequest(BaseModel):
-    query: str
+    query: str = Field(min_length=1, max_length=8000)
     conversation_id: str | None = None
 
-    # Optional PDF document ID.
-    # If present, the question can be answered using PDF RAG.
+    # Optional PDF document ID (must belong to the user).
     document_id: str | None = None
 
-    # Optional uploaded image path.
-    # If present, the image workflow uses OCR + Vision.
-    image_path: str | None = None
+    # Optional uploaded image ID returned by /upload/image
+    # (must belong to the user). File paths are never accepted.
+    image_id: str | None = None
 
 
 # ============================================================
 # PERSISTENT CHAT MEMORY / SUPABASE
 # ============================================================
-
-def _supabase():
-    return get_supabase()
-
 
 def _user_id(user) -> str:
     return str(user.id)
@@ -184,7 +216,7 @@ def _document_owned_by_user(document_id: str, user) -> bool:
     """
     try:
         result = (
-            _supabase()
+            supabase
             .table("documents")
             .select("id")
             .eq("id", document_id)
@@ -198,10 +230,42 @@ def _document_owned_by_user(document_id: str, user) -> bool:
         return False
 
 
+def _resolve_owned_image(image_id: str, user) -> tuple[str, Path]:
+    """
+    Return (file_id, server path) for an image the user uploaded.
+    Raises 404 for unknown, foreign, deleted or missing files.
+    """
+    try:
+        result = (
+            supabase
+            .table("files")
+            .select("id,storage_path")
+            .eq("id", image_id)
+            .eq("user_id", _user_id(user))
+            .eq("file_type", "IMAGE")
+            .is_("deleted_at", "null")
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        log_agent("DATABASE", f"Image lookup failed: {e}")
+        result = None
+
+    path = resolve_inside_uploads(result.data[0]["storage_path"]) if result and result.data else None
+
+    if not path:
+        raise HTTPException(
+            status_code=404,
+            detail="The attached image could not be found. Please upload it again.",
+        )
+
+    return result.data[0]["id"], path
+
+
 def _conversation_owned_by_user(conversation_id: str, user) -> bool:
     try:
         result = (
-            _supabase()
+            supabase
             .table("conversations")
             .select("id")
             .eq("id", conversation_id)
@@ -218,7 +282,7 @@ def _conversation_owned_by_user(conversation_id: str, user) -> bool:
 
 def _create_conversation(user, title: str = "New Chat") -> dict:
     result = (
-        _supabase()
+        supabase
         .table("conversations")
         .insert({
             "user_id": _user_id(user),
@@ -240,7 +304,7 @@ def _get_or_create_conversation(
 ) -> dict:
     if conversation_id:
         result = (
-            _supabase()
+            supabase
             .table("conversations")
             .select("*")
             .eq("id", conversation_id)
@@ -267,7 +331,7 @@ def _get_conversation_history(
     limit: int = 20,
 ) -> list[dict]:
     result = (
-        _supabase()
+        supabase
         .table("messages")
         .select("role,content,created_at")
         .eq("conversation_id", conversation_id)
@@ -296,11 +360,11 @@ def _save_message(
     content: str,
     route: str | None = None,
     metadata: dict | None = None,
-):
+) -> str | None:
     if not content:
-        return
+        return None
 
-    _supabase().table("messages").insert({
+    result = supabase.table("messages").insert({
         "conversation_id": conversation_id,
         "user_id": _user_id(user),
         "role": role.upper(),
@@ -309,6 +373,18 @@ def _save_message(
         "metadata": metadata or {},
     }).execute()
 
+    return result.data[0]["id"] if result.data else None
+
+
+def _set_message_route(message_id: str | None, route: str) -> None:
+    """Record the selected route on the user's message (used by admin activity)."""
+    if not message_id:
+        return
+    try:
+        supabase.table("messages").update({"route": route}).eq("id", message_id).execute()
+    except Exception as e:
+        log_agent("DATABASE", f"Route update failed: {e}")
+
 
 def _update_conversation_title_if_needed(
     conversation_id: str,
@@ -316,7 +392,7 @@ def _update_conversation_title_if_needed(
     query: str,
 ):
     result = (
-        _supabase()
+        supabase
         .table("conversations")
         .select("title")
         .eq("id", conversation_id)
@@ -338,7 +414,7 @@ def _update_conversation_title_if_needed(
     if len(title) > 60:
         title = title[:57].rstrip() + "..."
 
-    _supabase().table("conversations").update({
+    supabase.table("conversations").update({
         "title": title or "New Chat"
     }).eq(
         "id", conversation_id
@@ -347,684 +423,302 @@ def _update_conversation_title_if_needed(
     ).execute()
 
 
+def _validate_chat_attachments(request: ChatRequest, user) -> Path | None:
+    """
+    Ownership checks for the optional PDF and image. Returns the
+    server path of the image (if any).
+    """
+    if request.document_id and not _document_owned_by_user(request.document_id, user):
+        raise HTTPException(
+            status_code=403,
+            detail="You do not have access to this PDF.",
+        )
+
+    if request.image_id:
+        _, path = _resolve_owned_image(request.image_id, user)
+        return path
+
+    return None
+
+
+def _record_image_analysis(image_id: str, result: dict) -> None:
+    try:
+        supabase.table("images").update({
+            "ocr_text": (result.get("ocr_text") or "")[:20000],
+            "vision_result": (result.get("vision_answer") or "")[:20000],
+            "ocr_status": "COMPLETED" if result.get("ocr_ok") else "FAILED",
+            "vision_status": "COMPLETED" if result.get("vision_ok") else "FAILED",
+        }).eq("file_id", image_id).execute()
+    except Exception as e:
+        log_agent("DATABASE", f"Image status update failed: {e}")
+
+
+async def _read_upload(file: UploadFile, max_mb: int, kind: str) -> bytes:
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file selected.")
+
+    content = await file.read(max_mb * 1024 * 1024 + 1)
+
+    if not content:
+        raise HTTPException(status_code=400, detail=f"The uploaded {kind} is empty.")
+
+    if len(content) > max_mb * 1024 * 1024:
+        raise HTTPException(status_code=413, detail=f"The {kind} is too large. Maximum size is {max_mb} MB.")
+
+    return content
+
+
 # ============================================================
 # PDF UPLOAD
 # ============================================================
 
+PDF_STAGE_LABELS = {
+    "uploaded": "Uploaded",
+    "extracting": "Extracting text",
+    "chunking": "Chunking",
+    "embedding": "Creating embeddings",
+    "indexing": "Indexing",
+}
+
+
 @app.post("/upload/pdf")
 async def upload_pdf(
     file: UploadFile = File(...),
+    stream: bool = False,
     user=Depends(get_current_user),
 ):
     """
     Upload a PDF and process it through the RAG pipeline.
 
-    Flow:
-
-    PDF
-      ↓
-    Save locally
-      ↓
-    Extract text
-      ↓
-    Clean text
-      ↓
-    Chunk text
-      ↓
-    Generate embeddings
-      ↓
-    Store in Supabase
-      ↓
-    Return document_id
+    With ?stream=true the response is newline-delimited JSON with the
+    real ingestion stages followed by a final "done" or "error" event.
     """
 
-    # ========================================================
-    # 1. Validate filename
-    # ========================================================
-
-    if not file.filename:
-        raise HTTPException(
-            status_code=400,
-            detail="No file selected."
-        )
-
-    # ========================================================
-    # 2. Validate extension
-    # ========================================================
-
-    original_filename = Path(file.filename).name
+    original_filename = safe_display_name(file.filename)
 
     if not original_filename.lower().endswith(".pdf"):
-        raise HTTPException(
-            status_code=400,
-            detail="Only PDF files are allowed."
-        )
+        raise HTTPException(status_code=400, detail="Only PDF files are allowed.")
 
-    # ========================================================
-    # 3. Validate MIME type
-    # ========================================================
+    content = await _read_upload(file, MAX_PDF_MB, "PDF")
 
-    # Some browsers/Swagger configurations may send
-    # application/octet-stream instead of application/pdf.
-    #
-    # Therefore we don't reject the file only because of
-    # the MIME type.
-    # ========================================================
+    if not content.startswith(b"%PDF-"):
+        raise HTTPException(status_code=400, detail="The uploaded file does not appear to be a valid PDF.")
 
-    log_agent(
-        "PDF",
-        f"Received file: {original_filename}"
-    )
+    file_path = save_upload(PDF_UPLOAD_DIR, content, ".pdf")
+    user_id = _user_id(user)
 
-    log_agent(
-        "PDF",
-        f"Content type: {file.content_type}"
-    )
+    log_agent("PDF", f"Received {original_filename} ({len(content)} bytes)")
 
-    # ========================================================
-    # 4. Read uploaded file
-    # ========================================================
-
-    try:
-
-        file_content = await file.read()
-
-    except Exception as e:
-
-        log_agent(
-            "PDF",
-            f"Unable to read uploaded file: {str(e)}"
-        )
-
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unable to read uploaded file: {str(e)}"
-        )
-
-    # ========================================================
-    # 5. Check file size
-    # ========================================================
-
-    file_size = len(file_content)
-
-    log_agent(
-        "PDF",
-        f"Uploaded file size: {file_size} bytes"
-    )
-
-    if file_size == 0:
-
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Uploaded PDF is empty. "
-                "Please select a valid PDF file and try again."
+    def run_ingestion(progress=None) -> str:
+        try:
+            document_id = ingest_pdf(
+                file_path=str(file_path),
+                filename=original_filename,
+                user_id=user_id,
+                progress=progress,
             )
-        )
+            log_agent("PDF", f"PDF ingestion completed: {document_id}")
+            return document_id
+        except Exception as e:
+            log_agent("PDF", f"PDF processing failed: {e!r}")
+            delete_stored_file(str(file_path))
+            log_activity(user_id, "PDF_UPLOAD_FAILED", original_filename, "FAILED", file_name=original_filename)
+            raise
 
-    # ========================================================
-    # 6. Check PDF signature
-    # ========================================================
-    #
-    # A real PDF normally starts with:
-    #
-    # %PDF-
-    #
-    # ========================================================
-
-    if not file_content.startswith(b"%PDF-"):
-
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "The uploaded file does not appear to be a valid PDF."
-            )
-        )
-
-    # ========================================================
-    # 7. Create unique filename
-    # ========================================================
-
-    unique_filename = (
-        f"{uuid.uuid4().hex}_{original_filename}"
-    )
-
-    file_path = PDF_UPLOAD_DIR / unique_filename
-
-    try:
-
-        # ====================================================
-        # 8. Save PDF locally
-        # ====================================================
-
-        with open(
-            file_path,
-            "wb"
-        ) as pdf_file:
-
-            pdf_file.write(
-                file_content
-            )
-
-        log_agent(
-            "PDF",
-            f"PDF saved: {file_path}"
-        )
-
-        # ====================================================
-        # 9. Verify saved file
-        # ====================================================
-
-        if not file_path.exists():
-
-            raise RuntimeError(
-                "PDF file could not be saved."
-            )
-
-        saved_size = file_path.stat().st_size
-
-        log_agent(
-            "PDF",
-            f"Saved PDF size: {saved_size} bytes"
-        )
-
-        if saved_size == 0:
-
-            raise RuntimeError(
-                "Saved PDF is empty."
-            )
-
-        # ====================================================
-        # 10. Run RAG ingestion
-        # ====================================================
-
-        log_agent(
-            "PDF",
-            "Starting PDF ingestion..."
-        )
-
-        document_id = ingest_pdf(
-            file_path=str(file_path),
-            filename=original_filename
-        )
-
-        # ====================================================
-        # 10A. Attach PDF ownership to authenticated user
-        # ====================================================
-        # ingest_pdf() creates the document/chunks. The ownership
-        # fields are assigned here because the upload endpoint
-        # knows the authenticated Supabase user.
-        ownership_update = (
-            _supabase()
-            .table("documents")
-            .update({
-                "user_id": _user_id(user),
-                "processing_status": "COMPLETED",
-            })
-            .eq("id", document_id)
-            .select("id,user_id,processing_status")
-            .execute()
-        )
-
-        if not ownership_update.data:
-            raise RuntimeError(
-                "PDF was ingested, but document ownership could not be saved."
-            )
-
-        log_agent(
-            "PDF",
-            f"PDF ingestion completed: {document_id}"
-        )
-        log_agent(
-            "PDF",
-            f"PDF ownership assigned to user: {_user_id(user)}"
-        )
-
-        # ====================================================
-        # 11. Return response
-        # ====================================================
-
+    def success_payload(document_id: str) -> dict:
         return {
             "success": True,
-            "message": (
-                "PDF uploaded and processed successfully."
-            ),
+            "message": "PDF uploaded and processed successfully.",
             "document_id": document_id,
             "filename": original_filename,
-            "file_size": saved_size
+            "file_size": len(content),
         }
 
-    except Exception as e:
+    failure_message = "We couldn't process this PDF. Please try another file."
 
-        log_agent(
-            "PDF",
-            f"PDF processing failed: {str(e)}"
-        )
+    if not stream:
+        try:
+            return success_payload(run_ingestion())
+        except Exception:
+            raise HTTPException(status_code=422, detail=failure_message)
 
-        # ====================================================
-        # Delete local file if processing fails
-        # ====================================================
+    events: queue.Queue = queue.Queue()
 
-        if file_path.exists():
+    def worker():
+        def progress(stage, details=None):
+            events.put({"type": "stage", "stage": stage, "label": PDF_STAGE_LABELS.get(stage, stage), **(details or {})})
+        try:
+            events.put({"type": "done", **success_payload(run_ingestion(progress))})
+        except Exception:
+            events.put({"type": "error", "detail": failure_message})
 
-            file_path.unlink(
-                missing_ok=True
-            )
+    def event_stream():
+        yield json.dumps({"type": "stage", "stage": "uploaded", "label": PDF_STAGE_LABELS["uploaded"]}) + "\n"
+        threading.Thread(target=worker, daemon=True).start()
+        while True:
+            event = events.get()
+            yield json.dumps(event) + "\n"
+            if event["type"] in ("done", "error"):
+                break
 
-        raise HTTPException(
-            status_code=500,
-            detail=f"PDF processing failed: {str(e)}"
-        )
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
 
 # ============================================================
 # IMAGE UPLOAD
 # ============================================================
 
+IMAGE_TYPES = {
+    ".jpg": ("JPEG", "image/jpeg"),
+    ".jpeg": ("JPEG", "image/jpeg"),
+    ".png": ("PNG", "image/png"),
+    ".webp": ("WEBP", "image/webp"),
+    ".bmp": ("BMP", "image/bmp"),
+}
+
+
 @app.post("/upload/image")
 async def upload_image(
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    user=Depends(get_current_user),
 ):
     """
-    Upload an image for OCR + Vision analysis.
-
-    Flow:
-
-    Image
-      ↓
-    Validate
-      ↓
-    Save locally
-      ↓
-    Return image_path
+    Upload an image for OCR + Vision analysis. Returns an image_id
+    that only this user can attach to a chat message.
     """
 
-    # ========================================================
-    # 1. Validate filename
-    # ========================================================
+    original_filename = safe_display_name(file.filename)
+    extension = Path(original_filename).suffix.lower()
 
-    if not file.filename:
-        raise HTTPException(
-            status_code=400,
-            detail="No file selected."
-        )
+    if extension not in IMAGE_TYPES:
+        raise HTTPException(status_code=400, detail="Only JPG, JPEG, PNG, WEBP and BMP images are allowed.")
 
-    original_filename = Path(file.filename).name
+    content = await _read_upload(file, MAX_IMAGE_MB, "image")
 
-    # ========================================================
-    # 2. Validate image extension
-    # ========================================================
+    # Verify the bytes really are an image of the claimed type.
+    try:
+        with Image.open(io.BytesIO(content)) as image:
+            detected_format = image.format
+            image.verify()
+    except (UnidentifiedImageError, OSError, ValueError):
+        detected_format = None
 
-    allowed_extensions = {
-        ".jpg",
-        ".jpeg",
-        ".png",
-        ".webp",
-        ".bmp"
-    }
+    expected_format, mime_type = IMAGE_TYPES[extension]
 
-    extension = Path(
-        original_filename
-    ).suffix.lower()
+    if detected_format != expected_format:
+        raise HTTPException(status_code=400, detail="The uploaded file is not a valid image.")
 
-    if extension not in allowed_extensions:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Only JPG, JPEG, PNG, WEBP and BMP "
-                "images are allowed."
-            )
-        )
-
-    # ========================================================
-    # 3. Validate MIME type when available
-    # ========================================================
-
-    allowed_mime_types = {
-        "image/jpeg",
-        "image/png",
-        "image/webp",
-        "image/bmp"
-    }
-
-    if (
-        file.content_type
-        and file.content_type not in allowed_mime_types
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail="Unsupported image MIME type."
-        )
-
-    log_agent(
-        "IMAGE",
-        f"Received file: {original_filename}"
-    )
-
-    log_agent(
-        "IMAGE",
-        f"Content type: {file.content_type}"
-    )
-
-    # ========================================================
-    # 4. Read uploaded file
-    # ========================================================
+    file_path = save_upload(IMAGE_UPLOAD_DIR, content, extension)
+    user_id = _user_id(user)
 
     try:
-
-        file_content = await file.read()
-
-    except Exception as e:
-
-        log_agent(
-            "IMAGE",
-            f"Unable to read uploaded file: {str(e)}"
-        )
-
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Unable to read uploaded file: {str(e)}"
-            )
-        )
-
-    # ========================================================
-    # 5. Check file size
-    # ========================================================
-
-    file_size = len(file_content)
-
-    log_agent(
-        "IMAGE",
-        f"Uploaded image size: {file_size} bytes"
-    )
-
-    if file_size == 0:
-
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Uploaded image is empty. "
-                "Please select a valid image."
-            )
-        )
-
-    # Keep upload size reasonable before sending it to
-    # OCR.space or the Vision model.
-    MAX_IMAGE_SIZE = 10 * 1024 * 1024
-
-    if file_size > MAX_IMAGE_SIZE:
-
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Image is too large. "
-                "Maximum upload size is 10 MB."
-            )
-        )
-
-    # ========================================================
-    # 6. Create unique filename
-    # ========================================================
-
-    unique_filename = (
-        f"{uuid.uuid4().hex}_{original_filename}"
-    )
-
-    file_path = IMAGE_UPLOAD_DIR / unique_filename
-
-    try:
-
-        # ====================================================
-        # 7. Save image locally
-        # ====================================================
-
-        with open(
-            file_path,
-            "wb"
-        ) as image_file:
-
-            image_file.write(
-                file_content
-            )
-
-        log_agent(
-            "IMAGE",
-            f"Image saved: {file_path}"
-        )
-
-        # ====================================================
-        # 8. Verify saved file
-        # ====================================================
-
-        if not file_path.exists():
-
-            raise RuntimeError(
-                "Image file could not be saved."
-            )
-
-        saved_size = file_path.stat().st_size
-
-        log_agent(
-            "IMAGE",
-            f"Saved image size: {saved_size} bytes"
-        )
-
-        return {
-            "success": True,
-            "message": (
-                "Image uploaded successfully."
-            ),
-            "image_path": str(file_path),
+        row = supabase.table("files").insert({
+            "user_id": user_id,
             "filename": original_filename,
-            "file_size": saved_size
-        }
+            "storage_path": str(file_path),
+            "file_type": "IMAGE",
+            "mime_type": mime_type,
+            "file_size": len(content),
+            "status": "UPLOADED",
+        }).execute().data[0]
+
+        supabase.table("images").insert({
+            "file_id": row["id"],
+            "ocr_status": "PENDING",
+            "vision_status": "PENDING",
+        }).execute()
 
     except Exception as e:
+        log_agent("IMAGE", f"Image record failed: {e!r}")
+        delete_stored_file(str(file_path))
+        log_activity(user_id, "IMAGE_UPLOAD_FAILED", original_filename, "FAILED", file_name=original_filename)
+        raise HTTPException(status_code=500, detail="Image upload failed. Please try again.")
 
-        log_agent(
-            "IMAGE",
-            f"Image upload failed: {str(e)}"
-        )
+    log_agent("IMAGE", f"Image saved for user {user_id}: {row['id']}")
 
-        if file_path.exists():
-
-            file_path.unlink(
-                missing_ok=True
-            )
-
-        raise HTTPException(
-            status_code=500,
-            detail=f"Image upload failed: {str(e)}"
-        )
+    return {
+        "success": True,
+        "message": "Image uploaded successfully.",
+        "image_id": row["id"],
+        "filename": original_filename,
+        "file_size": len(content),
+    }
 
 
 # ============================================================
 # VOICE TO TEXT
 # ============================================================
 
+AUDIO_EXTENSIONS = {".flac", ".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".ogg", ".wav", ".webm"}
+
+
 @app.post("/voice/transcribe")
 async def transcribe_voice(
     file: UploadFile = File(...),
-    language: str | None = None
+    language: str | None = None,
+    user=Depends(get_current_user),
 ):
     """
     Transcribe an uploaded audio file using Groq Whisper Large V3 Turbo.
-
-    Flow:
-
-    Audio
-      ↓
-    Validate
-      ↓
-    Save temporarily
-      ↓
-    Groq Whisper Large V3 Turbo
-      ↓
-    Return transcript
-
-    The frontend can then send the returned text to /chat/stream.
+    The frontend then sends the returned text to /chat/stream.
     """
 
-    # ========================================================
-    # 1. Validate filename
-    # ========================================================
+    original_filename = safe_display_name(file.filename)
 
-    if not file.filename:
+    if Path(original_filename).suffix.lower() not in AUDIO_EXTENSIONS:
         raise HTTPException(
             status_code=400,
-            detail="No audio file selected."
+            detail="Unsupported audio format. Allowed formats: flac, mp3, mp4, mpeg, mpga, m4a, ogg, wav, webm.",
         )
 
-    original_filename = Path(file.filename).name
-    extension = Path(original_filename).suffix.lower()
+    if language and (len(language) > 8 or not language.replace("-", "").isalpha()):
+        raise HTTPException(status_code=400, detail="Invalid language code.")
 
-    allowed_extensions = {
-        ".flac",
-        ".mp3",
-        ".mp4",
-        ".mpeg",
-        ".mpga",
-        ".m4a",
-        ".ogg",
-        ".wav",
-        ".webm"
+    content = await _read_upload(file, MAX_AUDIO_MB, "audio file")
+    user_id = _user_id(user)
+
+    result = speech_to_text_agent(
+        audio_bytes=content,
+        filename=original_filename,
+        language=language
+    )
+
+    if result.get("error"):
+        log_agent("VOICE", f"Transcription failed: {result['error']}")
+        log_activity(user_id, "VOICE", "Voice transcription", "FAILED")
+        raise HTTPException(status_code=502, detail="Speech transcription is temporarily unavailable.")
+
+    transcript = (result.get("text") or "").strip()
+
+    log_activity(
+        user_id,
+        "VOICE",
+        "Voice transcription",
+        "SUCCESS",
+        metadata={"characters": len(transcript), "language": language},
+    )
+
+    return {
+        "success": True,
+        "language": language,
+        "text": transcript,
+        "message": "" if transcript else "No speech was detected in the audio.",
     }
-
-    if extension not in allowed_extensions:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Unsupported audio format. Allowed formats: "
-                "flac, mp3, mp4, mpeg, mpga, m4a, ogg, wav, webm."
-            )
-        )
-
-    log_agent(
-        "VOICE",
-        f"Received audio: {original_filename}"
-    )
-
-    log_agent(
-        "VOICE",
-        f"Content type: {file.content_type}"
-    )
-
-    # ========================================================
-    # 2. Read audio
-    # ========================================================
-
-    try:
-        audio_content = await file.read()
-    except Exception as e:
-        log_agent(
-            "VOICE",
-            f"Unable to read audio: {str(e)}"
-        )
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unable to read audio file: {str(e)}"
-        )
-
-    # ========================================================
-    # 3. Validate size
-    # ========================================================
-
-    audio_size = len(audio_content)
-
-    # Keep this within Groq's free-tier direct upload limit.
-    max_audio_size = 25 * 1024 * 1024
-
-    if audio_size == 0:
-        raise HTTPException(
-            status_code=400,
-            detail="The uploaded audio file is empty."
-        )
-
-    if audio_size > max_audio_size:
-        raise HTTPException(
-            status_code=400,
-            detail="Audio file is too large. Maximum allowed size is 25 MB."
-        )
-
-    log_agent(
-        "VOICE",
-        f"Audio size: {audio_size} bytes"
-    )
-
-    # ========================================================
-    # 4. Transcribe using Groq Whisper
-    # ========================================================
-
-    try:
-        result = speech_to_text_agent(
-            audio_bytes=audio_content,
-            filename=original_filename,
-            language=language
-        )
-
-        if result.get("error"):
-            log_agent(
-                "VOICE",
-                f"Transcription failed: {result['error']}"
-            )
-            raise HTTPException(
-                status_code=500,
-                detail="Speech transcription failed."
-            )
-
-        transcript = result.get("text", "").strip()
-
-        if not transcript:
-            log_agent(
-                "VOICE",
-                "No speech detected."
-            )
-
-            return {
-                "success": True,
-                "filename": original_filename,
-                "language": language,
-                "text": "",
-                "message": "No speech was detected in the audio."
-            }
-
-        log_agent(
-            "VOICE",
-            "Speech transcription completed successfully."
-        )
-
-        return {
-            "success": True,
-            "filename": original_filename,
-            "language": language,
-            "text": transcript
-        }
-
-    except HTTPException:
-        raise
-
-    except Exception as e:
-        log_agent(
-            "VOICE",
-            f"Voice transcription failed: {str(e)}"
-        )
-
-        raise HTTPException(
-            status_code=500,
-            detail="Speech transcription service is temporarily unavailable."
-        )
 
 
 # ============================================================
 # CONVERSATIONS / CHAT HISTORY
 # ============================================================
 
+class ConversationCreate(BaseModel):
+    title: str = Field(default="New Chat", max_length=120)
+
+
 @app.get("/conversations")
 def list_conversations(user=Depends(get_current_user)):
     try:
         result = (
-            _supabase()
+            supabase
             .table("conversations")
             .select("id,title,is_archived,created_at,updated_at,last_message_at")
             .eq("user_id", _user_id(user))
@@ -1040,11 +734,11 @@ def list_conversations(user=Depends(get_current_user)):
 
 @app.post("/conversations")
 def create_conversation(
-    title: str = "New Chat",
+    body: ConversationCreate | None = None,
     user=Depends(get_current_user),
 ):
     try:
-        conversation = _create_conversation(user, title)
+        conversation = _create_conversation(user, body.title if body else "New Chat")
         return {"success": True, "conversation": conversation}
     except Exception as e:
         log_agent("DATABASE", f"Create conversation failed: {e}")
@@ -1061,7 +755,7 @@ def get_conversation_messages(
 
     try:
         result = (
-            _supabase()
+            supabase
             .table("messages")
             .select("id,conversation_id,role,content,route,metadata,created_at")
             .eq("conversation_id", conversation_id)
@@ -1088,7 +782,7 @@ def archive_conversation(
         raise HTTPException(status_code=404, detail="Conversation not found.")
 
     try:
-        _supabase().table("conversations").update({
+        supabase.table("conversations").update({
             "is_archived": True,
         }).eq(
             "id", conversation_id
@@ -1107,20 +801,13 @@ def archive_conversation(
 
 
 # ============================================================
-# NORMAL CHAT
+# NORMAL CHAT (LangGraph)
 # ============================================================
 
 @app.post("/chat")
 def chat(request: ChatRequest, user=Depends(get_current_user)):
 
-    if request.document_id and not _document_owned_by_user(
-        request.document_id,
-        user,
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="You do not have access to this PDF.",
-        )
+    image_path = _validate_chat_attachments(request, user)
 
     conversation = _get_or_create_conversation(
         request.conversation_id,
@@ -1128,25 +815,17 @@ def chat(request: ChatRequest, user=Depends(get_current_user)):
         request.query,
     )
     conversation_id = str(conversation["id"])
-    current_history = _get_conversation_history(
-        conversation_id,
-        user,
-    )
+    current_history = _get_conversation_history(conversation_id, user)
 
-    _save_message(
+    user_message_id = _save_message(
         conversation_id,
         user,
         "USER",
         request.query,
         metadata={
             "document_id": request.document_id,
-            "image_path": request.image_path,
+            "image_id": request.image_id,
         },
-    )
-
-    log_agent(
-        "SYSTEM",
-        f"Processing normal chat request: {request.query}"
     )
 
     initial_state = {
@@ -1162,129 +841,81 @@ def chat(request: ChatRequest, user=Depends(get_current_user)):
         # PDF RAG
         "document_id": request.document_id,
 
-        # Image OCR + Vision
-        "image_path": request.image_path,
+        # Image OCR + Vision (server-resolved path only)
+        "image_path": str(image_path) if image_path else None,
         "image_ocr_text": "",
         "image_vision_result": ""
     }
 
     try:
-
-        log_agent(
-            "SYSTEM",
-            "Starting LangGraph execution"
-        )
-
-        result = chat_graph.invoke(
-            initial_state
-        )
-
-        log_agent(
-            "SYSTEM",
-            "LangGraph execution completed"
-        )
-
-        # ----------------------------------------------------
-        # Persist assistant response
-        # ----------------------------------------------------
-
-        final_response = result.get("final_response", "")
-
-        _save_message(
-            conversation_id,
-            user,
-            "ASSISTANT",
-            final_response,
-            route=result.get("route", ""),
-            metadata={
-                "sources": result.get("sources", []),
-                "route_reason": result.get("route_reason", ""),
-            },
-        )
-
-        _update_conversation_title_if_needed(
-            conversation_id,
-            user,
-            request.query,
-        )
-
-        log_agent(
-            "DATABASE",
-            f"Saved conversation {conversation_id}"
-        )
-
-        return {
-            "success": True,
-            "conversation_id": conversation_id,
-            "query": request.query,
-
-            "route": result.get(
-                "route",
-                ""
-            ),
-
-            "route_reason": result.get(
-                "route_reason",
-                ""
-            ),
-
-            "response": result.get(
-                "final_response",
-                ""
-            ),
-
-            "sources": result.get(
-                "sources",
-                []
-            ),
-
-            "error": result.get(
-                "error",
-                ""
-            )
-        }
-
+        result = chat_graph.invoke(initial_state)
     except Exception as e:
-
-        log_agent(
-            "SYSTEM",
-            f"Normal chat failed: {str(e)}"
-        )
-
+        log_agent("SYSTEM", f"Normal chat failed: {e!r}")
+        log_activity(_user_id(user), "CHAT_ERROR", request.query, "FAILED", document_id=request.document_id)
         return {
             "success": False,
+            "conversation_id": conversation_id,
             "query": request.query,
             "route": "",
             "route_reason": "",
-            "response": (
-                "Sorry, something went wrong "
-                "while processing your request."
-            ),
+            "response": "Sorry, something went wrong while processing your request.",
             "sources": [],
-            "error": str(e)
         }
+
+    route = result.get("route", "")
+    final_response = result.get("final_response", "")
+
+    _set_message_route(user_message_id, route)
+
+    _save_message(
+        conversation_id,
+        user,
+        "ASSISTANT",
+        final_response,
+        route=route,
+        metadata={
+            "sources": result.get("sources", []),
+            "route_reason": result.get("route_reason", ""),
+        },
+    )
+
+    _update_conversation_title_if_needed(conversation_id, user, request.query)
+
+    return {
+        "success": True,
+        "conversation_id": conversation_id,
+        "query": request.query,
+        "route": route,
+        "route_reason": result.get("route_reason", ""),
+        "response": final_response,
+        "sources": result.get("sources", []),
+    }
 
 
 # ============================================================
 # STREAMING CHAT
 # ============================================================
 
+SEARCH_AGENTS = {
+    "WIKIPEDIA": (wikipedia_agent, "Reading Wikipedia"),
+    "TAVILY": (tavily_agent, "Searching the web"),
+    "ARXIV": (arxiv_agent, "Searching research papers"),
+}
+
+
+def _sse(payload: dict) -> str:
+    return "data: " + json.dumps(payload) + "\n\n"
+
+
 @app.post("/chat/stream")
 def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
 
     query = request.query
     document_id = request.document_id
+    user_id = _user_id(user)
 
-    # Never allow a document_id from another user to enter
-    # the conversation/RAG workflow.
-    if document_id and not _document_owned_by_user(
-        document_id,
-        user,
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="You do not have access to this PDF.",
-        )
+    # Never allow another user's PDF or image into the workflow.
+    image_path = _validate_chat_attachments(request, user)
 
     conversation = _get_or_create_conversation(
         request.conversation_id,
@@ -1293,586 +924,127 @@ def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
     )
     conversation_id = str(conversation["id"])
 
-    current_history = _get_conversation_history(
-        conversation_id,
-        user,
-    )
+    current_history = _get_conversation_history(conversation_id, user)
 
-    _save_message(
+    user_message_id = _save_message(
         conversation_id,
         user,
         "USER",
         query,
         metadata={
-            "document_id": request.document_id,
-            "image_path": request.image_path,
+            "document_id": document_id,
+            "image_id": request.image_id,
         },
     )
 
-
-    image_path = request.image_path
-
-    # ========================================================
-    # STREAM GENERATOR
-    # ========================================================
-
     def generate():
+
+        route = ""
 
         try:
 
             # =================================================
-            # SYSTEM START
-            # =================================================
-
-            log_agent(
-                "SYSTEM",
-                f"Processing query: {query}"
-            )
-
-            # =================================================
             # STEP 1: ROUTER
             # =================================================
-            #
-            # If a PDF document_id is supplied, we know that
-            # this conversation currently has an uploaded PDF.
-            #
-            # Therefore we use PDF_RAG directly.
-            #
-            # Without document_id, the existing router handles:
-            #
-            # DIRECT
-            # WIKIPEDIA
-            # TAVILY
-            # ARXIV
-            #
-            # =================================================
+
+            yield _sse({"type": "status", "stage": "routing", "label": "Choosing the best route"})
 
             if document_id:
-
                 route = "PDF_RAG"
-
-                route_reason = (
-                    "An uploaded PDF is attached to this request, "
-                    "so the question will use PDF retrieval."
-                )
-
-                log_agent(
-                    "ROUTER",
-                    "PDF document detected. Selecting PDF_RAG."
-                )
-
+                route_reason = "An uploaded PDF is attached to this request, so the question will use PDF retrieval."
             elif image_path:
-
                 route = "IMAGE"
-
-                route_reason = (
-                    "An uploaded image is attached to this request, "
-                    "so OCR + Vision analysis will be used."
-                )
-
-                log_agent(
-                    "ROUTER",
-                    "Image detected. Selecting IMAGE."
-                )
-
+                route_reason = "An uploaded image is attached to this request, so OCR + Vision analysis will be used."
             else:
-
-                log_agent(
-                    "ROUTER",
-                    "Starting route analysis"
-                )
-
-                decision = route_query(
-                    query
-                )
-
+                decision = route_query(query)
                 route = decision.route
-
                 route_reason = decision.reason
 
-                log_agent(
-                    "ROUTER",
-                    f"Route selected: {route}"
-                )
+            log_agent("ROUTER", f"Route selected: {route}")
+            _set_message_route(user_message_id, route)
 
-            # =================================================
-            # SEND ROUTE TO FRONTEND
-            # =================================================
-
-            yield (
-                "data: "
-                + json.dumps(
-                    {
-                        "type": "route",
-                        "route": route,
-                        "route_reason": route_reason
-                    }
-                )
-                + "\n\n"
-            )
+            yield _sse({"type": "route", "route": route, "route_reason": route_reason})
 
             # =================================================
             # STEP 2: TOOL EXECUTION
             # =================================================
 
             tool_result = ""
-
             sources = []
-
             error = ""
 
-            # =================================================
-            # DIRECT
-            # =================================================
-
             if route == "DIRECT":
+                pass
 
-                log_agent(
-                    "DIRECT",
-                    "No external tool required"
-                )
-
-                tool_result = ""
-
-            # =================================================
-            # WIKIPEDIA
-            # =================================================
-
-            elif route == "WIKIPEDIA":
-
-                log_agent(
-                    "WIKIPEDIA",
-                    "Starting Wikipedia agent"
-                )
-
-                result = wikipedia_agent(
-                    query
-                )
-
-                tool_result = result.get(
-                    "content",
-                    ""
-                )
-
-                sources = result.get(
-                    "sources",
-                    []
-                )
-
-                error = result.get(
-                    "error",
-                    ""
-                )
-
-                if error:
-
-                    log_agent(
-                        "WIKIPEDIA",
-                        f"Agent failed: {error}"
-                    )
-
-                else:
-
-                    log_agent(
-                        "WIKIPEDIA",
-                        "Agent execution successful"
-                    )
-
-            # =================================================
-            # TAVILY
-            # =================================================
-
-            elif route == "TAVILY":
-
-                log_agent(
-                    "TAVILY",
-                    "Starting Tavily agent"
-                )
-
-                result = tavily_agent(
-                    query
-                )
-
-                tool_result = result.get(
-                    "content",
-                    ""
-                )
-
-                sources = result.get(
-                    "sources",
-                    []
-                )
-
-                error = result.get(
-                    "error",
-                    ""
-                )
-
-                if error:
-
-                    log_agent(
-                        "TAVILY",
-                        f"Agent failed: {error}"
-                    )
-
-                else:
-
-                    log_agent(
-                        "TAVILY",
-                        "Agent execution successful"
-                    )
-
-            # =================================================
-            # ARXIV
-            # =================================================
-
-            elif route == "ARXIV":
-
-                log_agent(
-                    "ARXIV",
-                    "Starting arXiv agent"
-                )
-
-                result = arxiv_agent(
-                    query
-                )
-
-                tool_result = result.get(
-                    "content",
-                    ""
-                )
-
-                sources = result.get(
-                    "sources",
-                    []
-                )
-
-                error = result.get(
-                    "error",
-                    ""
-                )
-
-                if error:
-
-                    log_agent(
-                        "ARXIV",
-                        f"Agent failed: {error}"
-                    )
-
-                else:
-
-                    log_agent(
-                        "ARXIV",
-                        "Agent execution successful"
-                    )
-
-            # =================================================
-            # PDF RAG
-            # =================================================
+            elif route in SEARCH_AGENTS:
+                agent, label = SEARCH_AGENTS[route]
+                yield _sse({"type": "status", "stage": "tool", "label": label})
+                result = agent(query)
+                tool_result = result.get("content", "")
+                sources = result.get("sources", [])
+                error = result.get("error", "")
 
             elif route == "PDF_RAG":
-
-                log_agent(
-                    "PDF_RAG",
-                    "Starting PDF RAG agent"
-                )
-
+                yield _sse({"type": "status", "stage": "retrieval", "label": "Searching your PDF"})
                 try:
+                    result = rag_agent(query=query, document_id=document_id)
+                    tool_result = result.get("answer", "")
+                    sources = result.get("sources", [])
 
-                    result = rag_agent(
-                        query=query,
-                        document_id=document_id,
-                        match_count=5
-                    )
-
-                    tool_result = result.get(
-                        "answer",
-                        ""
-                    )
-
-                    sources = result.get(
-                        "sources",
-                        []
-                    )
-
-                    error = ""
-
-                    log_agent(
-                        "PDF_RAG",
-                        "PDF RAG execution successful"
-                    )
-
-                    # =================================================
-                    # NO RELEVANT PDF INFORMATION FOUND
-                    # =================================================
-                    # Do NOT send unsupported PDF questions to Groq.
-                    # Otherwise Groq may answer from general knowledge.
-                    # =================================================
-
+                    # No relevant PDF information: do not let the LLM
+                    # answer from general knowledge.
                     if not result.get("chunks"):
-
-                        log_agent(
-                            "PDF_RAG",
-                            "No relevant PDF chunks found. "
-                            "Returning grounded fallback response."
-                        )
-
-                        fallback_message = (
-                            "I could not find this information "
-                            "in the uploaded PDF."
-                        )
-
-                        yield (
-                            "data: "
-                            + json.dumps(
-                                {
-                                    "type": "content",
-                                    "content": fallback_message
-                                }
-                            )
-                            + "\n\n"
-                        )
-
-                        yield (
-                            "data: "
-                            + json.dumps(
-                                {
-                                    "type": "sources",
-                                    "sources": []
-                                }
-                            )
-                            + "\n\n"
-                        )
-
-                        yield (
-                            "data: "
-                            + json.dumps(
-                                {
-                                    "type": "done"
-                                }
-                            )
-                            + "\n\n"
-                        )
-
+                        fallback = "I could not find this information in the uploaded PDF."
+                        yield _sse({"type": "content", "content": fallback})
+                        _save_message(conversation_id, user, "ASSISTANT", fallback, route=route,
+                                      metadata={"sources": [], "route_reason": route_reason})
+                        yield _sse({"type": "sources", "sources": []})
+                        yield _sse({"type": "done"})
                         return
 
                 except Exception as e:
-
                     error = str(e)
-
-                    log_agent(
-                        "PDF_RAG",
-                        f"PDF RAG failed: {error}"
-                    )
-
-            # =================================================
-            # IMAGE
-            # =================================================
 
             elif route == "IMAGE":
-
-                log_agent(
-                    "IMAGE",
-                    "Starting OCR + Vision analysis"
-                )
-
+                yield _sse({"type": "status", "stage": "image", "label": "Reading text and analyzing the image"})
                 try:
-
-                    if not image_path:
-
-                        error = (
-                            "No image is attached to this request."
-                        )
-
-                    else:
-
-                        # ---------------------------------------------
-                        # OCR
-                        # ---------------------------------------------
-
-                        log_agent(
-                            "OCR",
-                            "Starting OCR agent"
-                        )
-
-                        ocr_result = ocr_agent(
-                            image_path=image_path,
-                            query=query
-                        )
-
-                        ocr_text = ocr_result.get(
-                            "ocr_text",
-                            ""
-                        )
-
-                        ocr_error = ocr_result.get(
-                            "error",
-                            ""
-                        )
-
-                        # ---------------------------------------------
-                        # VISION
-                        # ---------------------------------------------
-
-                        log_agent(
-                            "VISION",
-                            "Starting Vision agent"
-                        )
-
-                        vision_result = vision_agent(
-                            image_path=image_path,
-                            query=query
-                        )
-
-                        vision_answer = vision_result.get(
-                            "answer",
-                            ""
-                        )
-
-                        vision_error = vision_result.get(
-                            "error",
-                            ""
-                        )
-
-                        # ---------------------------------------------
-                        # Combine OCR + Vision
-                        # ---------------------------------------------
-
-                        tool_result = f"""
-IMAGE ANALYSIS RESULT
-
-OCR TEXT:
-{ocr_text}
-
-VISION ANALYSIS:
-{vision_answer}
-"""
-
-                        errors = []
-
-                        if ocr_error:
-
-                            errors.append(
-                                f"OCR error: {ocr_error}"
-                            )
-
-                        if vision_error:
-
-                            errors.append(
-                                f"Vision error: {vision_error}"
-                            )
-
-                        error = "\n".join(errors)
-
-                        if error:
-
-                            log_agent(
-                                "IMAGE",
-                                f"Image analysis failed: {error}"
-                            )
-
-                        else:
-
-                            log_agent(
-                                "IMAGE",
-                                "OCR + Vision analysis successful"
-                            )
-
+                    result = analyze_image(str(image_path), query)
+                    _record_image_analysis(request.image_id, result)
+                    tool_result = result["tool_result"]
+                    error = result["error"]
                 except Exception as e:
-
                     error = str(e)
 
-                    log_agent(
-                        "IMAGE",
-                        f"Image analysis failed: {error}"
-                    )
-
-            # =================================================
-            # UNKNOWN ROUTE
-            # =================================================
-
             else:
-
-                error = (
-                    "Unable to determine the "
-                    "appropriate route."
-                )
-
-                log_agent(
-                    "SYSTEM",
-                    error
-                )
-
-            # =================================================
-            # TOOL FAILED
-            # =================================================
+                error = "Unable to determine the appropriate route."
 
             if error:
-
-                log_agent(
-                    "SYSTEM",
-                    "Tool execution failed"
-                )
-
-                yield (
-                    "data: "
-                    + json.dumps(
-                        {
-                            "type": "error",
-                            "content": (
-                                "The requested information "
-                                "service is temporarily "
-                                "unavailable. Please try "
-                                "again later."
-                            )
-                        }
-                    )
-                    + "\n\n"
-                )
-
+                log_agent("SYSTEM", f"Tool execution failed on {route}: {error}")
+                log_activity(user_id, "CHAT_ERROR", query, "FAILED", route=route, document_id=document_id,
+                             metadata={"stage": "tool"})
+                yield _sse({
+                    "type": "error",
+                    "content": "The requested information service is temporarily unavailable. Please try again later.",
+                })
                 return
 
             # =================================================
             # STEP 3: GROQ STREAMING
             # =================================================
 
-            log_agent(
-                "LLM",
-                "Starting Groq response streaming"
-            )
+            yield _sse({"type": "status", "stage": "generating", "label": "Writing the answer"})
 
             full_response = ""
-
-            chunk_count = 0
 
             for chunk in stream_response(
                 query=query,
                 tool_result=tool_result,
                 chat_history=current_history
             ):
-
                 if not chunk:
                     continue
-
                 full_response += chunk
-
-                chunk_count += 1
-
-                yield (
-                    "data: "
-                    + json.dumps(
-                        {
-                            "type": "content",
-                            "content": chunk
-                        }
-                    )
-                    + "\n\n"
-                )
-
-            log_agent(
-                "LLM",
-                f"Streaming completed: {chunk_count} chunks"
-            )
+                yield _sse({"type": "content", "content": chunk})
 
             # =================================================
             # STEP 4: PERSIST CONVERSATION
@@ -1890,93 +1062,19 @@ VISION ANALYSIS:
                 },
             )
 
-            _update_conversation_title_if_needed(
-                conversation_id,
-                user,
-                query,
-            )
+            _update_conversation_title_if_needed(conversation_id, user, query)
 
-            log_agent(
-                "DATABASE",
-                f"Conversation {conversation_id} saved"
-            )
-
-            # =================================================
-            # STEP 5: SEND SOURCES
-            # =================================================
-
-            if sources:
-
-                log_agent(
-                    "SYSTEM",
-                    f"Sending {len(sources)} source(s) to frontend"
-                )
-
-            else:
-
-                log_agent(
-                    "SYSTEM",
-                    "No sources to send"
-                )
-
-            yield (
-                "data: "
-                + json.dumps(
-                    {
-                        "type": "sources",
-                        "sources": sources
-                    }
-                )
-                + "\n\n"
-            )
-
-            # =================================================
-            # STEP 6: COMPLETE
-            # =================================================
-
-            log_agent(
-                "SYSTEM",
-                "Request completed successfully"
-            )
-
-            yield (
-                "data: "
-                + json.dumps(
-                    {
-                        "type": "done"
-                    }
-                )
-                + "\n\n"
-            )
+            yield _sse({"type": "sources", "sources": sources})
+            yield _sse({"type": "done"})
 
         except Exception as e:
-
-            # =================================================
-            # UNEXPECTED ERROR
-            # =================================================
-
-            log_agent(
-                "SYSTEM",
-                f"Unexpected error: {str(e)}"
-            )
-
-            yield (
-                "data: "
-                + json.dumps(
-                    {
-                        "type": "error",
-                        "content": (
-                            "Something went wrong "
-                            "while processing your request."
-                        )
-                    }
-                )
-                + "\n\n"
-            )
-
-    # ========================================================
-    # RETURN SSE RESPONSE
-    # ========================================================
+            log_agent("SYSTEM", f"Unexpected streaming error: {e!r}")
+            log_activity(user_id, "CHAT_ERROR", query, "FAILED", route=route or None, document_id=document_id,
+                         metadata={"stage": "stream"})
+            yield _sse({
+                "type": "error",
+                "content": "Something went wrong while processing your request.",
+            })
 
     return StreamingResponse(
         generate(),
@@ -1984,6 +1082,14 @@ VISION ANALYSIS:
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
+            "X-Accel-Buffering": "no",
+            "X-Conversation-Id": conversation_id,
         }
     )
+
+
+# ============================================================
+# ADMIN API
+# ============================================================
+
+app.include_router(admin_router)

@@ -2,7 +2,7 @@ from langchain_groq import ChatGroq
 
 from config.settings import GROQ_API_KEY
 from prompts.rag_prompt import RAG_PROMPT
-from rag.retriever import retrieve_chunks
+from rag.retrieval.retrieval_pipeline import retrieve_context
 
 
 rag_llm = ChatGroq(
@@ -11,28 +11,64 @@ rag_llm = ChatGroq(
     api_key=GROQ_API_KEY
 )
 
+# Characters of chunk text shown as a citation preview in the UI.
+SNIPPET_CHARS = 220
+
+
+def _pdf_sources(context_chunks: list[dict]) -> list[dict]:
+    """
+    One citation per page, in the order the pages appear in the context.
+    """
+
+    sources = []
+    seen_pages = set()
+
+    for chunk in context_chunks:
+
+        page_number = chunk.get("page_number")
+
+        if page_number in seen_pages:
+            continue
+
+        seen_pages.add(page_number)
+
+        content = " ".join((chunk.get("content") or "").split())
+
+        sources.append({
+            "type": "pdf",
+            "title": f"Page {page_number}" if page_number else "PDF excerpt",
+            "page_number": page_number,
+            "chunk_index": chunk.get("chunk_index"),
+            "snippet": content[:SNIPPET_CHARS],
+        })
+
+    return sources
+
 
 def rag_agent(
     query: str,
     document_id: str | None = None,
-    match_count: int = 5
 ) -> dict:
     """
-    Retrieve relevant PDF chunks and generate
-    a grounded answer using Groq.
+    Retrieve context with the evaluated production retrieval pipeline
+    (query transformation, hybrid retrieval, reranking, diversity
+    selection, neighbor-aware context building) and generate a
+    grounded answer using Groq.
     """
 
     # --------------------------------------------------
-    # 1. Retrieve relevant chunks
+    # 1. Retrieve context
     # --------------------------------------------------
 
-    chunks = retrieve_chunks(
+    retrieval = retrieve_context(
         query=query,
-        match_count=match_count,
-        document_id=document_id
+        document_id=document_id,
     )
 
-    if not chunks:
+    context_chunks = retrieval.get("context_chunks") or []
+    context = retrieval.get("context") or ""
+
+    if not context_chunks or not context.strip():
         return {
             "answer": "I could not find this information in the uploaded PDF.",
             "sources": [],
@@ -40,33 +76,7 @@ def rag_agent(
         }
 
     # --------------------------------------------------
-    # 2. Build PDF context
-    # --------------------------------------------------
-
-    context_parts = []
-
-    sources = []
-
-    for chunk in chunks:
-
-        content = chunk.get("content", "")
-        page_number = chunk.get("page_number")
-        similarity = chunk.get("similarity", 0)
-
-        context_parts.append(
-            f"Page {page_number}:\n"
-            f"{content}"
-        )
-
-        sources.append({
-            "page_number": page_number,
-            "similarity": similarity
-        })
-
-    context = "\n\n".join(context_parts)
-
-    # --------------------------------------------------
-    # 3. Build prompt
+    # 2. Generate answer
     # --------------------------------------------------
 
     prompt = RAG_PROMPT.format(
@@ -74,14 +84,10 @@ def rag_agent(
         context=context
     )
 
-    # --------------------------------------------------
-    # 4. Generate answer
-    # --------------------------------------------------
-
     response = rag_llm.invoke(prompt)
 
     return {
         "answer": response.content,
-        "sources": sources,
-        "chunks": chunks
+        "sources": _pdf_sources(context_chunks),
+        "chunks": context_chunks
     }

@@ -27,13 +27,6 @@ def search_wikipedia(query: str) -> dict:
 
         response.raise_for_status()
 
-        # Debug information
-        print("\n========== WIKIPEDIA API ==========")
-        print("Status:", response.status_code)
-        print("Content-Type:", response.headers.get("content-type"))
-        print("Response:", response.text[:300])
-        print("===================================\n")
-
         data = response.json()
 
         results = data.get("query", {}).get("search", [])
@@ -76,20 +69,23 @@ def search_wikipedia(query: str) -> dict:
     except requests.exceptions.RequestException as e:
 
         return {
-            "content": f"Wikipedia request failed: {str(e)}",
-            "sources": []
+            "content": "",
+            "sources": [],
+            "error": f"Wikipedia request failed: {str(e)}"
         }
 
     except ValueError as e:
 
         return {
-            "content": f"Wikipedia returned invalid JSON: {str(e)}",
-            "sources": []
+            "content": "",
+            "sources": [],
+            "error": f"Wikipedia returned invalid JSON: {str(e)}"
         }
 
     except Exception as e:
 
         return {
-            "content": f"Wikipedia search failed: {str(e)}",
-            "sources": []
+            "content": "",
+            "sources": [],
+            "error": f"Wikipedia search failed: {str(e)}"
         }

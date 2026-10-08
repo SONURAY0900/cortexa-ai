@@ -29,11 +29,12 @@ def search_tavily(query: str) -> dict:
 
     if not TAVILY_AVAILABLE:
         return {
-            "content": (
+            "content": "",
+            "sources": [],
+            "error": (
                 "Tavily search is currently unavailable. "
                 f"Reason: {TAVILY_IMPORT_ERROR}"
-            ),
-            "sources": []
+            )
         }
 
     try:
@@ -78,6 +79,7 @@ def search_tavily(query: str) -> dict:
 
     except Exception as e:
         return {
-            "content": f"Tavily search failed: {str(e)}",
-            "sources": []
+            "content": "",
+            "sources": [],
+            "error": f"Tavily search failed: {str(e)}"
         }

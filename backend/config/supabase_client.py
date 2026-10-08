@@ -1,10 +1,8 @@
-from supabase import create_client, Client
-from config.settings import SUPABASE_URL, SUPABASE_KEY
+from supabase import Client
 
-supabase: Client = create_client(
-    SUPABASE_URL,
-    SUPABASE_KEY
-)
+# One shared Supabase client for the whole backend.
+from database.connection import supabase
+
 
 def get_supabase() -> Client:
     return supabase

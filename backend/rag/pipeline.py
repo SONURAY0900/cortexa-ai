@@ -30,16 +30,25 @@ from rag.embeddings.embeddings import (
 
 from rag.retrieval.vector_store import (
     create_document,
+    delete_document,
     store_chunks
 )
+
+from database.connection import supabase
 
 
 def ingest_pdf(
     file_path: str,
-    filename: str
+    filename: str,
+    user_id: str | None = None,
+    progress=None
 ) -> str:
     """
     Ingest a PDF into the RAG system.
+
+    progress: optional callable(stage, details) reporting real
+    pipeline stages ("extracting", "chunking", "embedding",
+    "indexing") to the caller, e.g. for an upload status display.
 
     Flow:
 
@@ -63,9 +72,13 @@ def ingest_pdf(
             f"PDF file not found: {file_path}"
         )
 
+    report = progress or (lambda stage, details=None: None)
+
     # ========================================================
     # STEP 1: DOCUMENT PROCESSING
     # ========================================================
+
+    report("extracting")
 
     pages = process_document(
         pdf_path
@@ -84,8 +97,31 @@ def ingest_pdf(
         filename=filename,
         file_path=str(pdf_path),
         file_type="application/pdf",
-        file_size=pdf_path.stat().st_size
+        file_size=pdf_path.stat().st_size,
+        user_id=user_id
     )
+
+    try:
+        _chunk_embed_and_store(document_id, pages, report)
+    except Exception:
+        # Never leave a half-ingested document behind.
+        delete_document(document_id)
+        raise
+
+    supabase.table("documents").update({
+        "processing_status": "COMPLETED"
+    }).eq("id", document_id).execute()
+
+    return document_id
+
+
+def _chunk_embed_and_store(
+    document_id: str,
+    pages: list[dict],
+    report
+) -> None:
+
+    report("chunking", {"pages": len(pages)})
 
     # ========================================================
     # STEP 3: CHUNKING
@@ -137,6 +173,8 @@ def ingest_pdf(
     # STEP 4: EMBEDDINGS
     # ========================================================
 
+    report("embedding", {"chunks": len(all_chunks)})
+
     texts = [
         chunk["content"]
         for chunk in all_chunks
@@ -169,9 +207,9 @@ def ingest_pdf(
     # STEP 6: STORE
     # ========================================================
 
+    report("indexing", {"chunks": len(all_chunks)})
+
     store_chunks(
         document_id=document_id,
         chunks=all_chunks
     )
-
-    return document_id

@@ -9,7 +9,8 @@ def create_document(
     filename: str,
     file_path: str,
     file_type: str,
-    file_size: int
+    file_size: int,
+    user_id: str | None = None
 ) -> str:
 
     response = (
@@ -20,7 +21,9 @@ def create_document(
                 "filename": filename,
                 "file_path": file_path,
                 "file_type": file_type,
-                "file_size": file_size
+                "file_size": file_size,
+                "user_id": user_id,
+                "processing_status": "PROCESSING"
             }
         )
         .execute()
@@ -85,3 +88,24 @@ def store_chunks(
         )
 
     return response.data
+
+
+# ============================================================
+# DELETE DOCUMENT
+# ============================================================
+
+def delete_document(
+    document_id: str
+) -> None:
+    """
+    Remove a document and all of its chunks (chunks first, so the
+    foreign key from document_chunks never blocks the delete).
+    """
+
+    supabase.table("document_chunks").delete().eq(
+        "document_id", document_id
+    ).execute()
+
+    supabase.table("documents").delete().eq(
+        "id", document_id
+    ).execute()

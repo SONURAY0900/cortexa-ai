@@ -51,6 +51,7 @@ def search_arxiv(query: str) -> dict:
 
     except Exception as e:
         return {
-            "content": f"arXiv search failed: {str(e)}",
-            "sources": []
+            "content": "",
+            "sources": [],
+            "error": f"arXiv search failed: {str(e)}"
         }
