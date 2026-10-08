@@ -6,7 +6,7 @@ load_dotenv()
 from graph.workflow import chat_graph
 
 
-BACKEND_DIR = Path(__file__).resolve().parent
+BACKEND_DIR = Path(__file__).resolve().parents[2]
 
 IMAGE_PATH = (
     BACKEND_DIR

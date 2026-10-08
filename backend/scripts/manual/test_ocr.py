@@ -5,7 +5,7 @@ load_dotenv()
 from tools.ocr_tool import extract_text_from_image
 
 
-IMAGE_PATH = "uploads/test_ocr.png"
+IMAGE_PATH = "uploads/images/test_ocr.png"
 
 
 try:

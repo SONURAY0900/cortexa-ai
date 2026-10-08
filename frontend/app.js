@@ -1,4456 +1,1099 @@
 /* =====================================================
-   Agentic AI - shared frontend logic
-
-   - Animated background (all pages)
-   - Theme toggle + backend status (all pages)
-   - Chat + router animation (index.html only)
-   - Streaming AI response
-   - Single /chat/stream request
+   Agentic AI — chat page
+   Depends on common.js (Auth, Api, Toast, Modal, el, …)
    ===================================================== */
 
+"use strict";
 
-/* =====================================================
-   API
-   ===================================================== */
+const ROUTES = {
+    DIRECT: { label: "Direct", status: "Writing the answer" },
+    WIKIPEDIA: { label: "Wikipedia", status: "Reading Wikipedia" },
+    TAVILY: { label: "Web", status: "Searching the web" },
+    ARXIV: { label: "arXiv", status: "Searching research papers" },
+    PDF_RAG: { label: "PDF", status: "Searching your PDF" },
+    IMAGE: { label: "Image", status: "Analyzing the image" },
+};
 
-const STREAM_CHAT_URL = "/chat/stream";
-const STATUS_URL = "/openapi.json";
-const VOICE_TRANSCRIBE_URL = "/voice/transcribe";
-
-/* ================= FILE UPLOAD ================= */
-const PDF_UPLOAD_URL = "/upload/pdf";
-const IMAGE_UPLOAD_URL = "/upload/image";
-let selectedDocumentId = null;
-let selectedImagePath = null;
-let selectedFileName = "";
-let selectedFileType = "";
-let selectedFileUploading = false;
-
-
-const CONVERSATIONS_URL = "/conversations";
-const CONVERSATION_MESSAGES_URL = (id) =>
-    `/conversations/${encodeURIComponent(id)}/messages`;
-
-
-/* =====================================================
-   ROUTES
-   ===================================================== */
-
-const ROUTES = [
-    "DIRECT",
-    "WIKIPEDIA",
-    "TAVILY",
-    "ARXIV"
+const SUGGESTIONS = [
+    { route: "DIRECT", text: "Explain how neural networks learn" },
+    { route: "WIKIPEDIA", text: "Who was Alan Turing?" },
+    { route: "TAVILY", text: "What is the latest AI news today?" },
+    { route: "ARXIV", text: "Find research papers about RAG" },
 ];
 
+const PDF_STAGES = [
+    { key: "upload", label: "Uploading" },
+    { key: "extracting", label: "Extracting" },
+    { key: "chunking", label: "Chunking" },
+    { key: "embedding", label: "Embedding" },
+    { key: "indexing", label: "Indexing" },
+    { key: "done", label: "Ready" },
+];
 
-const ROUTE_STATUS = {
-    DIRECT: "Generating response...",
-    WIKIPEDIA: "Reading Wikipedia information...",
-    TAVILY: "Searching the web...",
-    ARXIV: "Searching research papers..."
+const IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp", "image/bmp"];
+
+const state = {
+    conversationId: null,
+    conversations: [],
+    attachment: null,          // { kind: "pdf"|"image", id, name, size, status }
+    streaming: null,           // AbortController of the active request
+    uploadXHR: null,
 };
 
+const $ = (id) => document.getElementById(id);
+
 
 /* =====================================================
-   HELPERS
+   MARKDOWN (escape first, then format)
    ===================================================== */
-function escapeHTML(str) {
-    return String(str)
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
+
+function renderInline(text) {
+    return text
+        .replace(/`([^`]+)`/g, "<code>$1</code>")
+        .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+        .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+        .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, label, url) => {
+            const safe = safeUrl(url.replace(/&amp;/g, "&"));
+            return safe ? `<a href="${escapeHTML(safe)}" target="_blank" rel="noopener noreferrer">${label}</a>` : label;
+        })
+        .replace(/(^|[\s(])(https?:\/\/[^\s<)"]+)/g, (_, pre, url) => {
+            const safe = safeUrl(url.replace(/&amp;/g, "&"));
+            return safe ? `${pre}<a href="${escapeHTML(safe)}" target="_blank" rel="noopener noreferrer">${url}</a>` : pre + url;
+        });
 }
 
-window.escapeHTML = escapeHTML;
-const sleep = (ms) =>
-    new Promise((r) => setTimeout(r, ms));
+function renderMarkdown(source) {
+    const blocks = [];
+    let text = escapeHTML(source || "");
 
+    text = text.replace(/```([\w+-]*)\n?([\s\S]*?)(```|$)/g, (_, lang, code) => {
+        blocks.push(
+            `<div class="code-block"><div class="code-head"><span>${lang || "code"}</span>` +
+            `<button type="button" class="code-copy">Copy</button></div>` +
+            `<pre><code>${code.replace(/\n$/, "")}</code></pre></div>`
+        );
+        return `\n@@BLOCK${blocks.length - 1}@@\n`;
+    });
 
-/* =====================================================
-   THEME
-   ===================================================== */
+    const out = [];
+    let list = null;
+    let table = null;
 
-function applyTheme(theme) {
+    const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
+    const closeTable = () => {
+        if (!table) return;
+        const [head, ...rows] = table;
+        out.push(
+            '<div class="table-wrap"><table><thead><tr>' +
+            head.map((c) => `<th>${renderInline(c)}</th>`).join("") +
+            "</tr></thead><tbody>" +
+            rows.map((r) => "<tr>" + r.map((c) => `<td>${renderInline(c)}</td>`).join("") + "</tr>").join("") +
+            "</tbody></table></div>"
+        );
+        table = null;
+    };
 
-    document.documentElement.setAttribute(
-        "data-theme",
-        theme
-    );
+    for (const line of text.split("\n")) {
+        const trimmed = line.trim();
+        const cells = /^\|.*\|$/.test(trimmed) ? trimmed.slice(1, -1).split("|").map((c) => c.trim()) : null;
 
-    localStorage.setItem(
-        "theme",
-        theme
-    );
+        if (cells) {
+            closeList();
+            if (cells.every((c) => /^:?-{2,}:?$/.test(c))) continue;
+            (table ||= []).push(cells);
+            continue;
+        }
+        closeTable();
+
+        const ul = line.match(/^\s*[-*•]\s+(.*)/);
+        const ol = line.match(/^\s*\d+[.)]\s+(.*)/);
+        if (ul || ol) {
+            const tag = ul ? "ul" : "ol";
+            if (list !== tag) { closeList(); out.push(`<${tag}>`); list = tag; }
+            out.push(`<li>${renderInline((ul || ol)[1])}</li>`);
+            continue;
+        }
+        closeList();
+
+        const heading = line.match(/^(#{1,4})\s+(.*)/);
+        if (heading) out.push(`<h${Math.min(heading[1].length + 2, 5)}>${renderInline(heading[2])}</h${Math.min(heading[1].length + 2, 5)}>`);
+        else if (/^@@BLOCK\d+@@$/.test(trimmed)) out.push(trimmed);
+        else if (/^&gt;\s?/.test(trimmed)) out.push(`<blockquote>${renderInline(trimmed.replace(/^&gt;\s?/, ""))}</blockquote>`);
+        else if (/^(-{3,}|\*{3,})$/.test(trimmed)) out.push("<hr>");
+        else if (trimmed) out.push(`<p>${renderInline(line)}</p>`);
+    }
+    closeList();
+    closeTable();
+
+    return out.join("").replace(/@@BLOCK(\d+)@@/g, (_, i) => blocks[i]);
+}
+
+async function copyText(text, button) {
+    try {
+        await navigator.clipboard.writeText(text);
+        const original = button.textContent;
+        button.textContent = "Copied ✓";
+        button.classList.add("copied");
+        setTimeout(() => { button.textContent = original; button.classList.remove("copied"); }, 1500);
+    } catch (_) {
+        Toast.error("Copy failed. Please select the text manually.");
+    }
 }
 
 
-applyTheme(
-    localStorage.getItem("theme") || "light"
-);
+/* =====================================================
+   CHAT RENDERING
+   ===================================================== */
+
+const chat = {
+    get inner() { return $("chatInner"); },
+    get scroller() { return $("chatMessages"); },
+
+    nearBottom() {
+        const s = chat.scroller;
+        return s.scrollHeight - s.scrollTop - s.clientHeight < 160;
+    },
+
+    scroll(force = false) {
+        if (force || chat.nearBottom()) {
+            chat.scroller.scrollTo({ top: chat.scroller.scrollHeight, behavior: force ? "auto" : "smooth" });
+        }
+    },
+
+    welcome() {
+        const loggedIn = Boolean(Auth.user);
+        chat.inner.replaceChildren(el("section", { class: "hero-empty" }, [
+            el("div", { class: "hero-logo" }, [el("img", { src: "/frontend/assets/logo/logo.svg", width: "56", height: "56", alt: "" })]),
+            el("h1", { text: loggedIn ? "What can I help you with?" : "Your agentic AI assistant" }),
+            el("p", {
+                text: loggedIn
+                    ? "I pick the right tool for every question — web search, Wikipedia, research papers, your PDFs or images."
+                    : "Sign in to chat, search the web and research papers, and ask questions about your own PDFs and images.",
+            }),
+            loggedIn
+                ? el("div", { class: "chips" }, SUGGESTIONS.map((s, i) => el("button", {
+                    class: "chip",
+                    type: "button",
+                    style: `animation-delay:${80 + i * 60}ms`,
+                    onclick: () => sendMessage(s.text),
+                }, [
+                    el("span", { class: `dot route-dot route-${s.route}` }),
+                    el("span", { class: "chip-text", text: s.text }),
+                    el("em", { text: ROUTES[s.route].label }),
+                ])))
+                : el("div", { class: "hero-actions" }, [
+                    el("button", { class: "btn btn-primary", type: "button", text: "Log in", onclick: () => AuthModal.open("login") }),
+                    el("button", { class: "btn btn-outline", type: "button", text: "Create account", onclick: () => AuthModal.open("signup") }),
+                ]),
+        ]));
+    },
+
+    skeleton() {
+        chat.inner.replaceChildren(...[0, 1, 2].map((i) => el("div", { class: `message ${i % 2 ? "bot-message" : "user-message"} skeleton-message` }, [
+            el("div", { class: "avatar skeleton" }),
+            el("div", { class: "message-content" }, [
+                el("div", { class: "skeleton skeleton-line", style: "width:" + (i % 2 ? "70%" : "40%") }),
+                el("div", { class: "skeleton skeleton-line", style: "width:" + (i % 2 ? "92%" : "25%") }),
+            ]),
+        ])));
+    },
+
+    removeHero() {
+        chat.inner.querySelector(".hero-empty")?.remove();
+    },
+
+    timeLabel(value) {
+        return new Date(value || Date.now()).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    },
+
+    addUser(text, { time, attachment } = {}) {
+        chat.removeHero();
+        const content = el("div", { class: "message-content" }, [
+            attachment ? el("div", { class: "attachment-tag", text: `${attachment.kind === "pdf" ? "📄" : "🖼️"} ${attachment.name}` }) : null,
+            el("div", { class: "message-text", text }),
+            el("div", { class: "message-meta", text: chat.timeLabel(time) }),
+        ]);
+        chat.inner.append(el("div", { class: "message user-message" }, [content]));
+        chat.scroll(true);
+    },
+
+    /** Assistant card used both for history and live streaming. */
+    addAssistant({ route = "", time } = {}) {
+        chat.removeHero();
+        const badge = el("span", { class: "route-badge", hidden: true });
+        const head = el("div", { class: "answer-head" }, [
+            el("strong", { text: "Assistant" }),
+            badge,
+            el("span", { class: "message-time", text: chat.timeLabel(time) }),
+        ]);
+        const body = el("div", { class: "answer-body" });
+        const card = el("div", { class: "answer-card" }, [head, body]);
+        const wrap = el("div", { class: "message bot-message" }, [
+            el("div", { class: "avatar bot-avatar", "aria-hidden": "true", html: '<img src="/frontend/assets/logo/logo.svg" width="20" height="20" alt="">' }),
+            el("div", { class: "message-content" }, [card]),
+        ]);
+        chat.inner.append(wrap);
+
+        const api = {
+            wrap, card, body, text: "",
+            setRoute(name) {
+                if (!ROUTES[name]) return;
+                card.className = `answer-card route-${name}`;
+                badge.className = `route-badge route-${name}`;
+                badge.textContent = ROUTES[name].label;
+                badge.hidden = false;
+            },
+            setText(markdown) {
+                api.text = markdown;
+                body.innerHTML = renderMarkdown(markdown);
+                body.querySelectorAll(".code-copy").forEach((button) => {
+                    button.addEventListener("click", () => copyText(button.closest(".code-block").querySelector("code").textContent, button));
+                });
+            },
+            setSources(sources) {
+                card.querySelector(".sources")?.remove();
+                const items = renderSources(sources);
+                if (items) card.insertBefore(items, card.querySelector(".answer-foot"));
+            },
+            finish(routeName) {
+                card.querySelector(".answer-foot")?.remove();
+                const trace = ROUTES[routeName] ? el("div", { class: "trace" }, [
+                    el("span", { class: "step", text: "You" }), el("i", { text: "→" }),
+                    el("span", { class: "step", text: "Router" }), el("i", { text: "→" }),
+                    el("span", { class: `route-badge route-${routeName}`, text: ROUTES[routeName].label }), el("i", { text: "→" }),
+                    el("span", { class: "step", text: "Groq LLM" }),
+                ]) : el("div");
+                const copy = el("button", { class: "copy-btn", type: "button", text: "Copy" });
+                copy.addEventListener("click", () => copyText(api.text, copy));
+                card.append(el("div", { class: "answer-foot" }, [trace, copy]));
+            },
+            setError(message, onRetry) {
+                card.className = "answer-card is-error";
+                body.replaceChildren(
+                    el("div", { class: "error-box" }, [
+                        el("span", { class: "error-icon", html: ICONS.alert }),
+                        el("div", {}, [
+                            el("div", { class: "error-text", text: message }),
+                            onRetry ? el("button", { class: "btn btn-outline btn-sm", type: "button", text: "Try again", onclick: () => { wrap.remove(); onRetry(); } }) : null,
+                        ]),
+                    ])
+                );
+            },
+        };
+
+        if (route) api.setRoute(route);
+        return api;
+    },
+};
+
+function renderSources(sources) {
+    const web = [];
+    const pdf = [];
+    for (const source of sources || []) {
+        if (source?.type === "pdf" || (source?.page_number && !source?.url)) pdf.push(source);
+        else if (safeUrl(source?.url)) web.push(source);
+    }
+    if (!web.length && !pdf.length) return null;
+
+    return el("div", { class: "sources" }, [
+        el("div", { class: "sources-title", text: pdf.length ? "From your PDF" : "Sources" }),
+        el("div", { class: "source-grid" }, [
+            ...web.map((s, i) => {
+                const url = safeUrl(s.url);
+                let host = "";
+                try { host = new URL(url).hostname.replace(/^www\./, ""); } catch (_) { /* ignore */ }
+                return el("a", { class: "source-card", href: url, target: "_blank", rel: "noopener noreferrer", style: `animation-delay:${i * 60}ms` }, [
+                    el("span", { class: "source-index", text: String(i + 1) }),
+                    el("span", { class: "source-body" }, [
+                        el("span", { class: "source-title", text: s.title || host || url }),
+                        el("span", { class: "source-host", text: host }),
+                    ]),
+                ]);
+            }),
+            ...pdf.map((s, i) => el("div", { class: "source-card pdf", style: `animation-delay:${i * 60}ms` }, [
+                el("span", { class: "source-index", text: s.page_number ? `p.${s.page_number}` : "PDF" }),
+                el("span", { class: "source-body" }, [
+                    el("span", { class: "source-title", text: s.title || "PDF excerpt" }),
+                    s.snippet ? el("span", { class: "source-snippet", text: s.snippet + (s.snippet.length >= 200 ? "…" : "") }) : null,
+                ]),
+            ])),
+        ]),
+    ]);
+}
 
 
 /* =====================================================
-   ANIMATED BACKGROUND
+   THINKING / ROUTING INDICATOR
    ===================================================== */
 
-function initBackground() {
+function createThinking() {
+    chat.removeHero();
+    const status = el("span", { class: "thinking-label", text: "Thinking" });
+    const strip = el("div", { class: "route-strip" }, Object.entries(ROUTES).map(([key, r]) =>
+        el("span", { class: `route-chip route-${key}`, "data-route": key }, [el("span", { class: "dot route-dot" }), r.label])
+    ));
+    const panel = el("div", { class: "thinking-card" }, [
+        el("div", { class: "thinking-bar" }),
+        el("div", { class: "thinking-row" }, [
+            el("span", { class: "typing", "aria-hidden": "true" }, [el("i"), el("i"), el("i")]),
+            status,
+        ]),
+        strip,
+    ]);
+    const wrap = el("div", { class: "message bot-message thinking" }, [
+        el("div", { class: "avatar bot-avatar", "aria-hidden": "true", html: '<img src="/frontend/assets/logo/logo.svg" width="20" height="20" alt="">' }),
+        el("div", { class: "message-content" }, [panel]),
+    ]);
+    chat.inner.append(wrap);
+    chat.scroll(true);
 
-    const bg = document.createElement("div");
+    const chips = [...strip.children];
+    let index = 0;
+    const scanner = setInterval(() => {
+        chips.forEach((c) => c.classList.remove("scanning"));
+        chips[index++ % chips.length].classList.add("scanning");
+    }, 320);
 
-    bg.className = "bg";
+    return {
+        setStatus(text) { status.textContent = text; },
+        setRoute(route) {
+            clearInterval(scanner);
+            panel.classList.add("resolved");
+            chips.forEach((c) => {
+                c.classList.remove("scanning");
+                c.classList.toggle("selected", c.dataset.route === route);
+                c.classList.toggle("faded", c.dataset.route !== route);
+            });
+            status.textContent = ROUTES[route]?.status || "Working on it";
+        },
+        remove() {
+            clearInterval(scanner);
+            wrap.remove();
+        },
+    };
+}
 
-    bg.setAttribute(
-        "aria-hidden",
-        "true"
-    );
 
-    bg.innerHTML =
-        '<span class="orb o1"></span>' +
-        '<span class="orb o2"></span>' +
-        '<span class="orb o3"></span>' +
-        '<span class="grid"></span>' +
-        '<canvas id="bgCanvas"></canvas>';
+/* =====================================================
+   CONVERSATIONS
+   ===================================================== */
 
-    document.body.prepend(bg);
+const sidebar = {
+    skeleton() {
+        $("chatList").replaceChildren(...[70, 55, 80, 45].map((w) =>
+            el("li", { class: "chat-item" }, [el("span", { class: "skeleton skeleton-line", style: `width:${w}%` })])
+        ));
+    },
+
+    render() {
+        const list = $("chatList");
+        const needle = ($("chatSearch").value || "").trim().toLowerCase();
+        const items = state.conversations.filter((c) => !needle || (c.title || "").toLowerCase().includes(needle));
+
+        if (!Auth.user) {
+            list.replaceChildren(el("li", { class: "empty-note", text: "Log in to see your chats." }));
+            return;
+        }
+        if (!items.length) {
+            list.replaceChildren(el("li", { class: "empty-note", text: needle ? "No chats match your search." : "No chats yet. Ask your first question!" }));
+            return;
+        }
+
+        list.replaceChildren(...items.map((c) => {
+            const item = el("li", {
+                class: "chat-item" + (c.id === state.conversationId ? " active" : ""),
+                "data-id": c.id,
+                tabindex: "0",
+                role: "button",
+                "aria-current": c.id === state.conversationId ? "true" : null,
+            }, [
+                el("span", { class: "chat-title", text: c.title || "New chat" }),
+                el("button", {
+                    class: "chat-delete",
+                    type: "button",
+                    title: "Delete chat",
+                    "aria-label": `Delete chat ${c.title || ""}`,
+                    html: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>',
+                }),
+            ]);
+            return item;
+        }));
+    },
+
+    async load({ openLatest = false } = {}) {
+        if (!Auth.user) {
+            state.conversations = [];
+            sidebar.render();
+            return;
+        }
+        sidebar.skeleton();
+        try {
+            const data = await Api.get("/conversations");
+            state.conversations = data.conversations || [];
+            sidebar.render();
+            if (openLatest && !state.conversationId && state.conversations.length) {
+                await openConversation(state.conversations[0].id);
+            }
+        } catch (error) {
+            $("chatList").replaceChildren(el("li", { class: "empty-note error", text: error.message }));
+        }
+    },
+
+    close() {
+        if (window.matchMedia("(max-width: 860px)").matches) {
+            $("sidebar").classList.remove("open");
+            $("overlay").hidden = true;
+        }
+    },
+};
+
+async function openConversation(id) {
+    if (!id || state.streaming) return;
+    state.conversationId = id;
+    sidebar.render();
+    sidebar.close();
+    chat.skeleton();
+
+    try {
+        const data = await Api.get(`/conversations/${encodeURIComponent(id)}/messages`);
+        chat.inner.replaceChildren();
+        for (const m of data.messages || []) {
+            const role = String(m.role || "").toUpperCase();
+            if (role === "USER") {
+                chat.addUser(m.content || "", { time: m.created_at });
+            } else if (role === "ASSISTANT") {
+                const card = chat.addAssistant({ route: m.route, time: m.created_at });
+                card.setText(m.content || "");
+                card.setSources(m.metadata?.sources || []);
+                card.finish(m.route);
+            }
+        }
+        if (!chat.inner.children.length) chat.welcome();
+        chat.scroll(true);
+    } catch (error) {
+        chat.inner.replaceChildren();
+        chat.addAssistant().setError(error.message, () => openConversation(id));
+    }
+}
+
+async function newChat() {
+    if (state.streaming) return;
+    state.conversationId = null;
+    sidebar.render();
+    sidebar.close();
+    chat.welcome();
+    $("userInput").focus();
+}
+
+async function deleteConversation(id) {
+    const conversation = state.conversations.find((c) => c.id === id);
+    const confirmed = await Modal.confirm({
+        title: "Delete this chat?",
+        message: `“${conversation?.title || "New chat"}” will be removed from your chat list.`,
+        confirmText: "Delete chat",
+        danger: true,
+    });
+    if (!confirmed) return;
+
+    try {
+        await Api.del(`/conversations/${encodeURIComponent(id)}`);
+        state.conversations = state.conversations.filter((c) => c.id !== id);
+        if (state.conversationId === id) newChat();
+        sidebar.render();
+        Toast.success("Chat deleted.");
+    } catch (error) {
+        Toast.error(error.message);
+    }
+}
 
 
-    if (
-        window.matchMedia(
-            "(prefers-reduced-motion: reduce)"
-        ).matches
-    ) {
+/* =====================================================
+   SENDING / STREAMING
+   ===================================================== */
+
+function setStreaming(controller) {
+    state.streaming = controller;
+    const send = $("sendButton");
+    send.classList.toggle("is-stop", Boolean(controller));
+    send.setAttribute("aria-label", controller ? "Stop generating" : "Send message");
+    send.title = controller ? "Stop generating" : "Send";
+    $("attachFileButton").disabled = Boolean(controller) || Boolean(state.uploadXHR);
+}
+
+async function ensureConversation(firstMessage) {
+    if (state.conversationId) return state.conversationId;
+    const data = await Api.post("/conversations", { title: firstMessage.slice(0, 60) || "New Chat" });
+    state.conversationId = data.conversation.id;
+    state.conversations = [data.conversation, ...state.conversations];
+    sidebar.render();
+    return state.conversationId;
+}
+
+async function sendMessage(text) {
+    const input = $("userInput");
+    const query = (text ?? input.value).trim();
+
+    if (!query || state.streaming) return;
+
+    if (!Auth.user) {
+        AuthModal.open("login", { message: "Please log in to start chatting." });
+        return;
+    }
+    if (state.attachment && state.attachment.status !== "ready") {
+        Toast.info("Please wait until the file has finished processing.");
         return;
     }
 
+    input.value = "";
+    autoGrow();
 
-    const canvas =
-        bg.querySelector("canvas");
+    const attachment = state.attachment ? { ...state.attachment } : null;
+    chat.addUser(query, { attachment });
 
-    const ctx =
-        canvas.getContext("2d");
+    const controller = new AbortController();
+    setStreaming(controller);
+    const thinking = createThinking();
 
+    let card = null;
+    let route = "";
+    let full = "";
+    let sources = [];
+    let renderQueued = false;
 
-    let w = 0;
-    let h = 0;
-    let points = [];
+    const flush = () => {
+        renderQueued = false;
+        if (card) {
+            card.setText(full);
+            chat.scroll();
+        }
+    };
+    const ensureCard = () => {
+        if (!card) {
+            thinking.remove();
+            card = chat.addAssistant({ route });
+            card.body.classList.add("streaming");
+        }
+    };
 
-    let color =
-        "99,102,241";
+    try {
+        await ensureConversation(query);
 
-    let tick = 0;
+        const response = await Api.request("/chat/stream", {
+            method: "POST",
+            raw: true,
+            signal: controller.signal,
+            json: {
+                query,
+                conversation_id: state.conversationId,
+                document_id: attachment?.kind === "pdf" ? attachment.id : null,
+                image_id: attachment?.kind === "image" ? attachment.id : null,
+            },
+        });
 
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
 
-    function resize() {
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const events = buffer.split("\n\n");
+            buffer = events.pop();
 
-        w = canvas.width =
-            window.innerWidth;
+            for (const raw of events) {
+                if (!raw.startsWith("data:")) continue;
+                let data;
+                try { data = JSON.parse(raw.slice(5).trim()); } catch (_) { continue; }
 
-        h = canvas.height =
-            window.innerHeight;
-
-
-        const count = Math.min(
-            70,
-            Math.floor(
-                (w * h) / 20000
-            )
-        );
-
-
-        points = Array.from(
-            { length: count },
-            () => ({
-                x: Math.random() * w,
-                y: Math.random() * h,
-                vx:
-                    (Math.random() - 0.5)
-                    * 0.35,
-                vy:
-                    (Math.random() - 0.5)
-                    * 0.35
-            })
-        );
-    }
-
-
-    function frame() {
-
-        if (!document.hidden) {
-
-            if (tick++ % 30 === 0) {
-
-                color =
-                    getComputedStyle(
-                        document.documentElement
-                    )
-                        .getPropertyValue(
-                            "--particle"
-                        )
-                        .trim() || color;
-            }
-
-
-            ctx.clearRect(
-                0,
-                0,
-                w,
-                h
-            );
-
-
-            for (
-                let i = 0;
-                i < points.length;
-                i++
-            ) {
-
-                const p = points[i];
-
-
-                p.x += p.vx;
-                p.y += p.vy;
-
-
-                if (
-                    p.x < 0 ||
-                    p.x > w
-                ) {
-                    p.vx *= -1;
-                }
-
-
-                if (
-                    p.y < 0 ||
-                    p.y > h
-                ) {
-                    p.vy *= -1;
-                }
-
-
-                ctx.beginPath();
-
-                ctx.arc(
-                    p.x,
-                    p.y,
-                    1.6,
-                    0,
-                    Math.PI * 2
-                );
-
-
-                ctx.fillStyle =
-                    `rgba(${color},0.55)`;
-
-                ctx.fill();
-
-
-                for (
-                    let j = i + 1;
-                    j < points.length;
-                    j++
-                ) {
-
-                    const q = points[j];
-
-
-                    const d = Math.hypot(
-                        p.x - q.x,
-                        p.y - q.y
-                    );
-
-
-                    if (d < 130) {
-
-                        ctx.beginPath();
-
-                        ctx.moveTo(
-                            p.x,
-                            p.y
-                        );
-
-                        ctx.lineTo(
-                            q.x,
-                            q.y
-                        );
-
-
-                        ctx.strokeStyle =
-                            `rgba(${color},${0.16 * (1 - d / 130)})`;
-
-                        ctx.lineWidth = 1;
-
-                        ctx.stroke();
+                if (data.type === "status") {
+                    if (!card) thinking.setStatus(data.label || "Working on it");
+                } else if (data.type === "route") {
+                    route = String(data.route || "").toUpperCase();
+                    thinking.setRoute(route);
+                } else if (data.type === "content") {
+                    ensureCard();
+                    full += data.content || "";
+                    if (!renderQueued) {
+                        renderQueued = true;
+                        requestAnimationFrame(flush);
                     }
+                } else if (data.type === "sources") {
+                    sources = data.sources || [];
+                } else if (data.type === "error") {
+                    throw new ApiError(data.content || "Something went wrong while processing your request.", 502);
                 }
             }
         }
 
+        ensureCard();
+        flush();
+        card.body.classList.remove("streaming");
+        card.setSources(sources);
+        card.finish(route);
+        sidebar.load();
 
-        requestAnimationFrame(frame);
+    } catch (error) {
+        thinking.remove();
+        if (error.name === "AbortError") {
+            if (card) {
+                card.body.classList.remove("streaming");
+                card.setText(full + "\n\n*Stopped.*");
+                card.finish(route);
+            }
+        } else {
+            if (!card) card = chat.addAssistant();
+            card.body.classList.remove("streaming");
+            card.setError(error.message || MESSAGES.generic, () => sendMessage(query));
+        }
+    } finally {
+        setStreaming(null);
+        chat.scroll();
+        input.focus();
     }
-
-
-    window.addEventListener(
-        "resize",
-        resize
-    );
-
-    resize();
-
-    frame();
 }
 
+function autoGrow() {
+    const input = $("userInput");
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 180) + "px";
+}
 
 
 /* =====================================================
-   SUPABASE AUTH
+   FILE UPLOAD (PDF stages are real backend stages)
    ===================================================== */
 
-const SUPABASE_URL =
-    "https://fwdxzyyodatplmvyjozt.supabase.co";
-
-/*
-   IMPORTANT:
-   Replace the value below with your Supabase
-   Publishable/Anon key.
-
-   NEVER put sb_secret_... or a service-role key here.
-*/
-const SUPABASE_PUBLISHABLE_KEY =
-    "sb_publishable_wlq0SUlBijqChhosoxj64w_Q27LbZvu";
-
-let supabaseClient = null;
-let currentSession = null;
-let currentUser = null;
-
-let currentConversationId = null;
-let conversations = [];
-
-// ============================================================
-// GUEST SESSION
-// ============================================================
-
-const GUEST_SESSION_KEY = "agentic_ai_guest_session_id";
-const GUEST_PROMPT_SHOWN_KEY = "agentic_ai_guest_prompt_shown";
-
-function getGuestSessionId() {
-    let guestId = localStorage.getItem(GUEST_SESSION_KEY);
-
-    if (!guestId) {
-        if (window.crypto?.randomUUID) {
-            guestId = window.crypto.randomUUID();
-        } else {
-            guestId = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-                const r = Math.random() * 16 | 0;
-                const v = c === "x" ? r : (r & 0x3 | 0x8);
-                return v.toString(16);
-            });
-        }
-
-        localStorage.setItem(GUEST_SESSION_KEY, guestId);
-    }
-
-    return guestId;
+function limits() {
+    return Auth.config?.limits || { pdf_mb: 25, image_mb: 10, audio_mb: 25 };
 }
 
-function getGuestHeaders() {
-    return {
-        "X-Guest-Session-ID": getGuestSessionId()
-    };
-}
-
-async function getRequestHeaders(extraHeaders = {}) {
-    const authHeaders = await getAuthHeaders();
-
-    return {
-        ...extraHeaders,
-        ...(Object.keys(authHeaders).length > 0
-            ? authHeaders
-            : getGuestHeaders())
-    };
-}
-
-let mediaRecorder = null;
-let voiceStream = null;
-let voiceChunks = [];
-let isRecordingVoice = false;
-
-// File selected by the user but waiting for authentication.
-// The browser keeps the File object in memory; nothing is uploaded
-// or inserted into Supabase until the user is authenticated.
-let pendingFileAfterLogin = null;
-let pendingFileNeedsLogin = false;
-
-function loadSupabaseScript() {
-    return new Promise((resolve, reject) => {
-        if (window.supabase) {
-            resolve();
-            return;
-        }
-
-        const existing = document.querySelector(
-            'script[data-supabase-js="true"]'
-        );
-
-        if (existing) {
-            existing.addEventListener("load", resolve, { once: true });
-            existing.addEventListener("error", reject, { once: true });
-            return;
-        }
-
-        const script = document.createElement("script");
-        script.src =
-            "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2";
-        script.dataset.supabaseJs = "true";
-        script.onload = resolve;
-        script.onerror = () =>
-            reject(new Error("Unable to load Supabase JS."));
-        document.head.appendChild(script);
-    });
-}
-
-function authMessage(message, isError = false) {
-    const el = document.getElementById("authMessage");
-    if (!el) return;
-
-    el.textContent = message || "";
-    el.style.color = isError ? "#dc2626" : "#16a34a";
-}
-
-let passwordRecoveryMode = false;
-
-function createAuthUI() {
-    if (document.getElementById("authContainer")) {
+function renderAttachment() {
+    const box = $("attachment");
+    const a = state.attachment;
+    if (!a) {
+        box.hidden = true;
+        box.replaceChildren();
         return;
     }
+    box.hidden = false;
 
-    const container = document.createElement("div");
-    container.id = "authContainer";
-
-    Object.assign(container.style, {
-        position: "fixed",
-        top: "18px",
-        right: "18px",
-        zIndex: "9999",
-        fontFamily: "inherit"
+    const icon = a.kind === "pdf" ? "📄" : "🖼️";
+    const remove = el("button", {
+        class: "attachment-remove",
+        type: "button",
+        title: a.status === "ready" || a.status === "error" ? "Remove file" : "Cancel upload",
+        "aria-label": "Remove file",
+        html: ICONS.close,
+        onclick: clearAttachment,
     });
 
-    container.innerHTML = `
-        <button id="authLoginButton" type="button"
-            style="
-                border:1px solid rgba(99,102,241,.35);
-                background:rgba(255,255,255,.92);
-                color:#111827;
-                padding:9px 16px;
-                border-radius:10px;
-                cursor:pointer;
-                font-weight:600;
-                box-shadow:0 5px 20px rgba(0,0,0,.08);
-            ">
-            Login
-        </button>
-
-        <div id="authUserMenu" style="display:none;"></div>
-
-        <div id="authModal" style="
-            display:none;
-            position:fixed;
-            inset:0;
-            background:rgba(0,0,0,.55);
-            align-items:center;
-            justify-content:center;
-            padding:20px;
-        ">
-            <div style="
-                width:min(420px,100%);
-                background:var(--card,#ffffff);
-                color:var(--text,#111827);
-                border-radius:16px;
-                padding:24px;
-                box-shadow:0 20px 60px rgba(0,0,0,.25);
-            ">
-                <div style="
-                    display:flex;
-                    justify-content:space-between;
-                    align-items:center;
-                    margin-bottom:18px;
-                ">
-                    <h2 id="authTitle" style="margin:0;">Login</h2>
-
-                    <button id="authCloseButton" type="button"
-                        style="
-                            border:0;
-                            background:transparent;
-                            font-size:22px;
-                            cursor:pointer;
-                        ">
-                        ×
-                    </button>
-                </div>
-
-                <div id="authNameField" style="display:none;margin-bottom:12px;">
-                    <input id="authFullName" type="text"
-                        placeholder="Full name"
-                        autocomplete="name"
-                        style="
-                            width:100%;
-                            box-sizing:border-box;
-                            padding:11px;
-                            border:1px solid #d1d5db;
-                            border-radius:9px;
-                        ">
-                </div>
-
-                <input id="authEmail" type="email"
-                    placeholder="Email"
-                    autocomplete="email"
-                    style="
-                        width:100%;
-                        box-sizing:border-box;
-                        padding:11px;
-                        border:1px solid #d1d5db;
-                        border-radius:9px;
-                        margin-bottom:12px;
-                    ">
-
-                <div id="authPasswordField">
-                    <input id="authPassword" type="password"
-                        placeholder="Password"
-                        autocomplete="current-password"
-                        style="
-                            width:100%;
-                            box-sizing:border-box;
-                            padding:11px;
-                            border:1px solid #d1d5db;
-                            border-radius:9px;
-                            margin-bottom:8px;
-                        ">
-                </div>
-
-                <div id="authConfirmPasswordField" style="display:none;">
-                    <input id="authConfirmPassword" type="password"
-                        placeholder="Confirm new password"
-                        autocomplete="new-password"
-                        style="
-                            width:100%;
-                            box-sizing:border-box;
-                            padding:11px;
-                            border:1px solid #d1d5db;
-                            border-radius:9px;
-                            margin-bottom:12px;
-                        ">
-                </div>
-
-                <button id="forgotPasswordButton" type="button"
-                    style="
-                        display:block;
-                        border:0;
-                        background:transparent;
-                        color:#6366f1;
-                        cursor:pointer;
-                        padding:0;
-                        margin:0 0 14px auto;
-                        font-size:13px;
-                    ">
-                    Forgot password?
-                </button>
-
-                <button id="authSubmitButton" type="button"
-                    style="
-                        width:100%;
-                        padding:11px;
-                        border:0;
-                        border-radius:9px;
-                        background:#6366f1;
-                        color:white;
-                        cursor:pointer;
-                        font-weight:600;
-                    ">
-                    Login
-                </button>
-
-                <button id="googleAuthButton" type="button"
-                    style="
-                        width:100%;
-                        padding:11px;
-                        margin-top:10px;
-                        border:1px solid #d1d5db;
-                        border-radius:9px;
-                        background:transparent;
-                        color:inherit;
-                        cursor:pointer;
-                        font-weight:600;
-                    ">
-                    Continue with Google
-                </button>
-
-                <div id="authMessage"
-                    style="
-                        min-height:20px;
-                        margin-top:12px;
-                        font-size:13px;
-                    ">
-                </div>
-
-                <button id="authModeButton" type="button"
-                    style="
-                        border:0;
-                        background:transparent;
-                        color:#6366f1;
-                        cursor:pointer;
-                        padding:0;
-                        font-size:13px;
-                    ">
-                    Create an account
-                </button>
-            </div>
-        </div>
-    `;
-
-    document.body.appendChild(container);
-
-    const modal = document.getElementById("authModal");
-    const loginButton = document.getElementById("authLoginButton");
-    const closeButton = document.getElementById("authCloseButton");
-    const submitButton = document.getElementById("authSubmitButton");
-    const googleButton = document.getElementById("googleAuthButton");
-    const modeButton = document.getElementById("authModeButton");
-    const forgotButton = document.getElementById("forgotPasswordButton");
-
-    let signupMode = false;
-    let forgotMode = false;
-    let resetMode = false;
-
-    const openModal = () => {
-        modal.style.display = "flex";
-        authMessage("");
-    };
-
-    const closeModal = () => {
-        modal.style.display = "none";
-        authMessage("");
-        resetAuthFields();
-    };
-
-    const resetAuthFields = () => {
-        const email = document.getElementById("authEmail");
-        const password = document.getElementById("authPassword");
-        const confirmPassword = document.getElementById("authConfirmPassword");
-        const fullName = document.getElementById("authFullName");
-
-        if (email) email.value = "";
-        if (password) password.value = "";
-        if (confirmPassword) confirmPassword.value = "";
-        if (fullName) fullName.value = "";
-    };
-
-    const updateMode = () => {
-        const title = document.getElementById("authTitle");
-        const nameField = document.getElementById("authNameField");
-        const passwordField = document.getElementById("authPasswordField");
-        const confirmPasswordField = document.getElementById("authConfirmPasswordField");
-
-        if (resetMode) {
-            title.textContent = "Reset password";
-            nameField.style.display = "none";
-            passwordField.style.display = "block";
-            confirmPasswordField.style.display = "block";
-            document.getElementById("authPassword").placeholder = "New password";
-            document.getElementById("authPassword").autocomplete = "new-password";
-            forgotButton.style.display = "none";
-            submitButton.textContent = "Update password";
-            googleButton.style.display = "none";
-            modeButton.style.display = "none";
-            return;
-        }
-
-        if (forgotMode) {
-            title.textContent = "Forgot password";
-            nameField.style.display = "none";
-            passwordField.style.display = "none";
-            confirmPasswordField.style.display = "none";
-            forgotButton.style.display = "none";
-            submitButton.textContent = "Send reset email";
-            googleButton.style.display = "none";
-            modeButton.style.display = "block";
-            modeButton.textContent = "Back to login";
-            return;
-        }
-
-        title.textContent = signupMode ? "Create account" : "Login";
-        nameField.style.display = signupMode ? "block" : "none";
-        passwordField.style.display = "block";
-        confirmPasswordField.style.display = "none";
-        document.getElementById("authPassword").placeholder = "Password";
-        document.getElementById("authPassword").autocomplete = "current-password";
-        forgotButton.style.display = signupMode ? "none" : "block";
-        submitButton.textContent = signupMode ? "Sign up" : "Login";
-        googleButton.style.display = "block";
-        modeButton.style.display = "block";
-        modeButton.textContent = signupMode
-            ? "Already have an account? Login"
-            : "Create an account";
-    };
-
-    loginButton.addEventListener("click", () => {
-        signupMode = false;
-        forgotMode = false;
-        resetMode = false;
-        updateMode();
-        openModal();
-    });
-
-    closeButton.addEventListener("click", closeModal);
-
-    modal.addEventListener("click", (event) => {
-        if (event.target === modal) {
-            closeModal();
-        }
-    });
-
-    modeButton.addEventListener("click", () => {
-        if (forgotMode) {
-            signupMode = false;
-            forgotMode = false;
-            resetMode = false;
-        } else {
-            signupMode = !signupMode;
-            forgotMode = false;
-            resetMode = false;
-        }
-
-        resetAuthFields();
-        updateMode();
-        authMessage("");
-    });
-
-    forgotButton.addEventListener("click", () => {
-        signupMode = false;
-        forgotMode = true;
-        resetMode = false;
-        resetAuthFields();
-        updateMode();
-        authMessage("");
-        document.getElementById("authEmail").focus();
-    });
-
-    submitButton.addEventListener("click", async () => {
-        const email = document.getElementById("authEmail").value.trim();
-        const password = document.getElementById("authPassword").value;
-        const confirmPassword = document.getElementById("authConfirmPassword").value;
-        const fullName = document.getElementById("authFullName").value.trim();
-
-        if (resetMode || passwordRecoveryMode) {
-            if (!password || !confirmPassword) {
-                authMessage("Enter the new password twice.", true);
-                return;
-            }
-
-            if (password.length < 6) {
-                authMessage("Password must be at least 6 characters.", true);
-                return;
-            }
-
-            if (password !== confirmPassword) {
-                authMessage("Passwords do not match.", true);
-                return;
-            }
-
-            submitButton.disabled = true;
-            authMessage("Updating password...");
-
-            try {
-                const result = await updatePassword(password);
-
-                if (result.error) {
-                    throw result.error;
-                }
-
-                passwordRecoveryMode = false;
-
-                authMessage("Password updated successfully. You can now login.");
-
-                setTimeout(() => {
-                    resetMode = false;
-                    signupMode = false;
-                    forgotMode = false;
-                    updateMode();
-                    resetAuthFields();
-                }, 1200);
-            } catch (error) {
-                authMessage(
-                    error?.message || "Unable to update password.",
-                    true
-                );
-            } finally {
-                submitButton.disabled = false;
-            }
-
-            return;
-        }
-
-        if (forgotMode) {
-            if (!email) {
-                authMessage("Enter your email address.", true);
-                return;
-            }
-
-            submitButton.disabled = true;
-            authMessage("Sending reset email...");
-
-            try {
-                const result = await sendPasswordResetEmail(email);
-
-                if (result.error) {
-                    throw result.error;
-                }
-
-                authMessage(
-                    "Password reset email sent. Check your inbox and open the reset link."
-                );
-            } catch (error) {
-                authMessage(
-                    error?.message || "Unable to send reset email.",
-                    true
-                );
-            } finally {
-                submitButton.disabled = false;
-            }
-
-            return;
-        }
-
-        if (!email || !password) {
-            authMessage("Email and password are required.", true);
-            return;
-        }
-
-        submitButton.disabled = true;
-        authMessage("Please wait...");
-
-        try {
-            if (signupMode) {
-                const result = await signUpWithEmail(
-                    email,
-                    password,
-                    fullName
-                );
-
-                if (result.error) {
-                    throw result.error;
-                }
-
-                if (result.data?.session) {
-                    closeModal();
-                    await refreshAuthUI();
-                } else {
-                    authMessage(
-                        "Account created. Check your email to confirm your account."
-                    );
-                }
-            } else {
-                const result = await loginWithEmail(
-                    email,
-                    password
-                );
-
-                if (result.error) {
-                    throw result.error;
-                }
-
-                closeModal();
-                await refreshAuthUI();
-            }
-        } catch (error) {
-            authMessage(
-                error?.message || "Authentication failed.",
-                true
-            );
-        } finally {
-            submitButton.disabled = false;
-        }
-    });
-
-    googleButton.addEventListener("click", async () => {
-        googleButton.disabled = true;
-        authMessage("Opening Google login...");
-
-        try {
-            const result = await loginWithGoogle();
-
-            if (result?.error) {
-                throw result.error;
-            }
-        } catch (error) {
-            authMessage(
-                error?.message || "Google login failed.",
-                true
-            );
-            googleButton.disabled = false;
-        }
-    });
-
-    updateMode();
-}
-
-function hideGuestAuthPrompt() {
-    const prompt = document.getElementById("guestAuthPrompt");
-    if (prompt) {
-        prompt.style.display = "none";
-    }
-}
-
-function showGuestAuthPrompt() {
-    if (!document.getElementById("chatMessages")) return;
-    if (currentUser) return;
-    if (sessionStorage.getItem(GUEST_PROMPT_SHOWN_KEY) === "true") return;
-
-    let prompt = document.getElementById("guestAuthPrompt");
-
-    if (!prompt) {
-        prompt = document.createElement("div");
-        prompt.id = "guestAuthPrompt";
-        prompt.style.cssText = `
-            position:fixed;
-            inset:0;
-            z-index:10001;
-            display:flex;
-            align-items:center;
-            justify-content:center;
-            padding:20px;
-            background:rgba(0,0,0,.45);
-        `;
-
-        prompt.innerHTML = `
-            <div style="
-                width:min(420px,100%);
-                background:var(--card,#ffffff);
-                color:var(--text,#111827);
-                border-radius:18px;
-                padding:26px;
-                box-shadow:0 24px 80px rgba(0,0,0,.28);
-                text-align:center;
-            ">
-                <div style="font-size:34px;margin-bottom:8px;">🤖</div>
-                <h2 style="margin:0 0 8px;">Save your conversations</h2>
-                <p style="margin:0 0 20px;opacity:.75;line-height:1.5;">
-                    You can continue as a guest, or create an account to keep your chats with your account.
-                </p>
-                <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center;">
-                    <button id="guestPromptLogin" type="button" style="
-                        flex:1;min-width:110px;padding:11px 14px;border:0;border-radius:10px;
-                        background:#6366f1;color:#fff;cursor:pointer;font-weight:600;
-                    ">Login</button>
-                    <button id="guestPromptSignup" type="button" style="
-                        flex:1;min-width:110px;padding:11px 14px;border:1px solid #6366f1;border-radius:10px;
-                        background:transparent;color:#6366f1;cursor:pointer;font-weight:600;
-                    ">Sign up</button>
-                    <button id="guestPromptContinue" type="button" style="
-                        width:100%;padding:10px;border:0;background:transparent;color:inherit;
-                        opacity:.7;cursor:pointer;
-                    ">Continue as Guest</button>
-                </div>
-            </div>
-        `;
-
-        document.body.appendChild(prompt);
-
-        document.getElementById("guestPromptLogin")?.addEventListener("click", () => {
-            sessionStorage.setItem(GUEST_PROMPT_SHOWN_KEY, "true");
-            hideGuestAuthPrompt();
-            document.getElementById("authLoginButton")?.click();
-        });
-
-        document.getElementById("guestPromptSignup")?.addEventListener("click", () => {
-            sessionStorage.setItem(GUEST_PROMPT_SHOWN_KEY, "true");
-            hideGuestAuthPrompt();
-            document.getElementById("authLoginButton")?.click();
-            setTimeout(() => {
-                document.getElementById("authModeButton")?.click();
-            }, 50);
-        });
-
-        document.getElementById("guestPromptContinue")?.addEventListener("click", () => {
-            sessionStorage.setItem(GUEST_PROMPT_SHOWN_KEY, "true");
-            hideGuestAuthPrompt();
-        });
+    let detail;
+    if (a.status === "error") {
+        detail = el("div", { class: "attachment-status error", text: a.error });
+    } else if (a.status === "ready") {
+        detail = el("div", { class: "attachment-status ready" }, [
+            el("span", { html: ICONS.check }),
+            a.kind === "pdf" ? `Ready · ask questions about this PDF${a.chunks ? ` (${a.chunks} passages indexed)` : ""}` : "Ready · your next message will analyze this image",
+        ]);
+    } else if (a.kind === "pdf") {
+        const current = PDF_STAGES.findIndex((s) => s.key === a.stage);
+        detail = el("div", { class: "stepper" }, PDF_STAGES.map((s, i) => el("span", {
+            class: "step" + (i < current ? " done" : i === current ? " active" : ""),
+        }, [
+            el("i"),
+            s.key === "upload" && i === current && a.progress != null ? `Uploading ${a.progress}%` : s.label,
+        ])));
+    } else {
+        detail = el("div", { class: "attachment-status" }, [
+            el("span", { class: "progress-track" }, [el("span", { class: "progress-fill", style: `width:${a.progress || 0}%` })]),
+            `Uploading ${a.progress || 0}%`,
+        ]);
     }
 
-    prompt.style.display = "flex";
-}
-
-async function initSupabaseAuth() {
-    try {
-        await loadSupabaseScript();
-
-        if (
-            SUPABASE_PUBLISHABLE_KEY ===
-            "YOUR_SUPABASE_PUBLISHABLE_KEY"
-        ) {
-            console.warn(
-                "Supabase Auth: Add your Publishable/Anon key to app.js."
-            );
-            return;
-        }
-
-        supabaseClient =
-            window.supabase.createClient(
-                SUPABASE_URL,
-                SUPABASE_PUBLISHABLE_KEY
-            );
-
-        /*
-         * Listen for auth events first.
-         * PASSWORD_RECOVERY can happen immediately after Supabase
-         * processes the recovery link.
-         */
-        supabaseClient.auth.onAuthStateChange(
-            async (event, sessionData) => {
-                await handleAuthSession(sessionData);
-
-                if (event === "PASSWORD_RECOVERY") {
-                    passwordRecoveryMode = true;
-                    openPasswordResetUI();
-                }
-            }
-        );
-
-        const {
-            data: { session }
-        } = await supabaseClient.auth.getSession();
-
-        await handleAuthSession(session);
-
-        /*
-         * Fallback for password-reset links:
-         * resetPasswordForEmail() redirects to /?reset=1.
-         * The URL flag guarantees that the reset form opens even if
-         * PASSWORD_RECOVERY fired before the listener was ready.
-         */
-        const params = new URLSearchParams(window.location.search);
-
-        if (params.get("reset") === "1") {
-            passwordRecoveryMode = true;
-
-            setTimeout(() => {
-                openPasswordResetUI();
-
-                /*
-                 * Remove ?reset=1 after the form opens so refreshing
-                 * the page does not repeatedly open the reset form.
-                 */
-                const cleanUrl =
-                    window.location.origin +
-                    window.location.pathname;
-
-                window.history.replaceState(
-                    {},
-                    document.title,
-                    cleanUrl
-                );
-            }, 100);
-        }
-    } catch (error) {
-        console.error(
-            "Supabase Auth initialization failed:",
-            error
-        );
-    }
-}
-
-async function migrateGuestSession() {
-    if (!currentUser || !currentSession?.access_token) {
-        return null;
-    }
-
-    const guestId = localStorage.getItem(GUEST_SESSION_KEY);
-
-    if (!guestId) {
-        return null;
-    }
-
-    try {
-        const response = await fetch(
-            "/auth/migrate-guest",
-            {
-                method: "POST",
-                headers: {
-                    Authorization:
-                        `Bearer ${currentSession.access_token}`,
-                    "X-Guest-Session-ID": guestId
-                }
-            }
-        );
-
-        let data = null;
-
-        try {
-            data = await response.json();
-        } catch (_) {
-            data = null;
-        }
-
-        if (!response.ok) {
-            throw new Error(
-                data?.detail ||
-                `Guest history migration failed: HTTP ${response.status}`
-            );
-        }
-
-        console.log(
-            "Guest migration:",
-            data
-        );
-
-        // Once the guest history is successfully claimed, this browser no
-        // longer needs the old anonymous identity. A future logout will get
-        // a fresh guest session instead of reusing the migrated one.
-        localStorage.removeItem(GUEST_SESSION_KEY);
-
-        return data;
-
-    } catch (error) {
-        // Keep the guest ID if migration failed. This allows a retry on the
-        // next auth event/page refresh instead of losing guest history.
-        console.warn(
-            "Guest history migration failed:",
-            error
-        );
-        return null;
-    }
-}
-
-
-async function handleAuthSession(session) {
-    const wasLoggedOut = !currentUser;
-
-    currentSession = session || null;
-    currentUser = session?.user || null;
-
-    if (currentUser) {
-        hideGuestAuthPrompt();
-
-        // Phase 7.6: claim the guest history created by this browser before
-        // loading the authenticated conversation list.
-        await migrateGuestSession();
-    }
-
-    await refreshAuthUI();
-
-    // If a PDF was selected before login, upload it automatically after
-    // authentication succeeds. No temporary database row is needed.
-    if (currentUser && wasLoggedOut && pendingFileAfterLogin) {
-        const pendingFile = pendingFileAfterLogin;
-        pendingFileAfterLogin = null;
-        pendingFileNeedsLogin = false;
-
-        await uploadSelectedFile(pendingFile);
-    }
-
-    setTimeout(() => {
-        refreshConversationList();
-    }, 0);
-
-    if (currentSession) {
-        try {
-            await fetch("/auth/me", {
-                method: "GET",
-                headers: {
-                    Authorization:
-                        `Bearer ${currentSession.access_token}`
-                }
-            });
-        } catch (error) {
-            console.warn(
-                "Backend auth verification failed:",
-                error
-            );
-        }
-    }
-}
-
-async function refreshAuthUI() {
-    const loginButton =
-        document.getElementById("authLoginButton");
-
-    const userMenu =
-        document.getElementById("authUserMenu");
-
-    if (!loginButton || !userMenu) {
-        return;
-    }
-
-    const attachButton = document.getElementById("attachFileButton");
-
-    if (!currentUser) {
-        if (attachButton) {
-            attachButton.title = "Login required before uploading a file";
-            attachButton.setAttribute("aria-label", "Login required before uploading a file");
-        }
-        loginButton.style.display = "block";
-        userMenu.style.display = "none";
-        return;
-    }
-
-    if (attachButton) {
-        attachButton.title = "Upload PDF or image";
-        attachButton.setAttribute("aria-label", "Upload PDF or image");
-    }
-
-    loginButton.style.display = "none";
-    userMenu.style.display = "block";
-
-    userMenu.innerHTML = `
-        <div style="
-            display:flex;
-            align-items:center;
-            gap:8px;
-        ">
-            <button id="authUserButton" type="button"
-                style="
-                    border:1px solid rgba(99,102,241,.35);
-                    background:rgba(255,255,255,.92);
-                    color:#111827;
-                    padding:9px 12px;
-                    border-radius:10px;
-                    cursor:pointer;
-                    font-weight:600;
-                    box-shadow:0 5px 20px rgba(0,0,0,.08);
-                ">
-                ${escapeHTML(
-                    currentUser.email || "User"
-                )}
-            </button>
-
-            <button id="authLogoutButton" type="button"
-                style="
-                    border:1px solid #ef4444;
-                    background:transparent;
-                    color:#ef4444;
-                    padding:9px 12px;
-                    border-radius:10px;
-                    cursor:pointer;
-                    font-weight:600;
-                ">
-                Logout
-            </button>
-        </div>
-
-        <div style="
-            margin-top:7px;
-            font-size:11px;
-            opacity:.75;
-            text-align:right;
-        ">
-            ID: ${escapeHTML(currentUser.id || "")}
-        </div>
-    `;
-
-    document
-        .getElementById("authLogoutButton")
-        .addEventListener(
-            "click",
-            logoutUser
-        );
-}
-
-async function signUpWithEmail(
-    email,
-    password,
-    fullName = ""
-) {
-    if (!supabaseClient) {
-        throw new Error(
-            "Supabase Auth is not initialized."
-        );
-    }
-
-    return await supabaseClient.auth.signUp({
-        email,
-        password,
-        options: {
-            data: {
-                full_name: fullName
-            }
-        }
-    });
-}
-
-async function loginWithEmail(email, password) {
-    if (!supabaseClient) {
-        throw new Error(
-            "Supabase Auth is not initialized."
-        );
-    }
-
-    return await supabaseClient.auth.signInWithPassword({
-        email,
-        password
-    });
-}
-
-async function loginWithGoogle() {
-    if (!supabaseClient) {
-        throw new Error(
-            "Supabase Auth is not initialized."
-        );
-    }
-
-    return await supabaseClient.auth.signInWithOAuth({
-        provider: "google",
-        options: {
-            redirectTo:
-                window.location.origin + "/"
-        }
-    });
-}
-
-async function sendPasswordResetEmail(email) {
-    if (!supabaseClient) {
-        throw new Error("Supabase Auth is not initialized.");
-    }
-
-    const redirectTo = window.location.origin + "/?reset=1";
-
-    return await supabaseClient.auth.resetPasswordForEmail(
-        email,
-        {
-            redirectTo
-        }
+    box.className = `attachment ${a.status}`;
+    box.replaceChildren(
+        el("span", { class: "attachment-icon", text: icon }),
+        el("div", { class: "attachment-body" }, [
+            el("div", { class: "attachment-name" }, [
+                el("span", { class: "name", text: a.name }),
+                el("span", { class: "size", text: formatBytes(a.size) }),
+            ]),
+            detail,
+        ]),
+        remove,
     );
 }
 
-async function updatePassword(newPassword) {
-    if (!supabaseClient) {
-        throw new Error("Supabase Auth is not initialized.");
+function clearAttachment() {
+    if (state.uploadXHR) {
+        state.uploadXHR.abort();
+        state.uploadXHR = null;
+    }
+    state.attachment = null;
+    $("fileInput").value = "";
+    $("attachFileButton").disabled = Boolean(state.streaming);
+    renderAttachment();
+}
+
+function validateFile(file) {
+    const name = file.name.toLowerCase();
+    const isPDF = name.endsWith(".pdf") || file.type === "application/pdf";
+    const isImage = IMAGE_TYPES.includes(file.type) || /\.(jpe?g|png|webp|bmp)$/.test(name);
+    const { pdf_mb, image_mb } = limits();
+
+    if (!isPDF && !isImage) return { error: "Unsupported file type. Please choose a PDF, JPG, PNG, WEBP or BMP file." };
+    if (isPDF && file.size > pdf_mb * 1024 * 1024) return { error: `This PDF is larger than ${pdf_mb} MB.` };
+    if (isImage && file.size > image_mb * 1024 * 1024) return { error: `This image is larger than ${image_mb} MB.` };
+    if (!file.size) return { error: "This file is empty." };
+    return { kind: isPDF ? "pdf" : "image" };
+}
+
+async function uploadFile(file) {
+    if (!Auth.user) {
+        AuthModal.open("login", { message: "Please log in to upload files." });
+        return;
+    }
+    if (state.streaming) return;
+
+    const check = validateFile(file);
+    if (check.error) {
+        Toast.error(check.error);
+        return;
     }
 
-    return await supabaseClient.auth.updateUser({
-        password: newPassword
+    clearAttachment();
+    state.attachment = { kind: check.kind, name: file.name, size: file.size, status: "uploading", stage: "upload", progress: 0 };
+    renderAttachment();
+    $("attachFileButton").disabled = true;
+
+    const token = await Auth.token();
+    const xhr = new XMLHttpRequest();
+    state.uploadXHR = xhr;
+    const url = check.kind === "pdf" ? "/upload/pdf?stream=true" : "/upload/image";
+    xhr.open("POST", url);
+    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+
+    const current = state.attachment;
+    const update = (patch) => {
+        if (state.attachment !== current) return;   // superseded or cancelled
+        Object.assign(current, patch);
+        renderAttachment();
+    };
+    const fail = (message) => {
+        update({ status: "error", error: message });
+        state.uploadXHR = null;
+        $("attachFileButton").disabled = Boolean(state.streaming);
+    };
+
+    xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) update({ progress: Math.round((event.loaded / event.total) * 100) });
+    };
+    xhr.upload.onload = () => update({ progress: 100 });
+
+    let consumed = 0;
+    const readEvents = () => {
+        const text = xhr.responseText;
+        const lines = text.slice(consumed).split("\n");
+        const complete = text.endsWith("\n") ? lines : lines.slice(0, -1);
+        for (const line of complete) {
+            consumed += line.length + 1;
+            if (!line.trim()) continue;
+            let data;
+            try { data = JSON.parse(line); } catch (_) { continue; }
+            if (data.type === "stage") update({ stage: data.stage === "uploaded" ? "extracting" : data.stage, chunks: data.chunks ?? current.chunks });
+            if (data.type === "done") {
+                update({ status: "ready", stage: "done", id: data.document_id });
+                Toast.success(`${current.name} is ready.`);
+            }
+            if (data.type === "error") fail(data.detail || "We couldn't process this PDF. Please try another file.");
+        }
+    };
+
+    xhr.onprogress = () => { if (check.kind === "pdf" && xhr.status === 200) readEvents(); };
+
+    xhr.onload = () => {
+        state.uploadXHR = null;
+        $("attachFileButton").disabled = Boolean(state.streaming);
+
+        if (xhr.status === 401) {
+            fail(MESSAGES.session);
+            AuthModal.open("login");
+            return;
+        }
+        if (xhr.status !== 200) {
+            let detail = null;
+            try { detail = JSON.parse(xhr.responseText).detail; } catch (_) { /* not JSON */ }
+            fail(typeof detail === "string" ? detail : (check.kind === "pdf"
+                ? "We couldn't process this PDF. Please try another file."
+                : "We couldn't upload this image. Please try another file."));
+            return;
+        }
+        if (check.kind === "pdf") {
+            readEvents();
+            if (current.status === "uploading") fail("The upload ended unexpectedly. Please try again.");
+        } else {
+            try {
+                const data = JSON.parse(xhr.responseText);
+                update({ status: "ready", id: data.image_id });
+            } catch (_) {
+                fail("We couldn't upload this image. Please try another file.");
+            }
+        }
+    };
+    xhr.onerror = () => fail(MESSAGES.network);
+    xhr.onabort = () => { state.uploadXHR = null; };
+
+    const form = new FormData();
+    form.append("file", file);
+    xhr.send(form);
+}
+
+function initUpload() {
+    const input = $("fileInput");
+    $("attachFileButton").addEventListener("click", () => {
+        if (!Auth.user) {
+            AuthModal.open("login", { message: "Please log in to upload files." });
+            return;
+        }
+        input.click();
+    });
+    input.addEventListener("change", () => {
+        const file = input.files?.[0];
+        if (file) uploadFile(file);
+        input.value = "";
+    });
+
+    const main = $("main");
+    const zone = $("dropZone");
+    let depth = 0;
+    const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes("Files");
+
+    main.addEventListener("dragenter", (e) => {
+        if (!hasFiles(e)) return;
+        e.preventDefault();
+        depth++;
+        zone.hidden = false;
+    });
+    main.addEventListener("dragover", (e) => { if (hasFiles(e)) e.preventDefault(); });
+    main.addEventListener("dragleave", () => {
+        depth = Math.max(0, depth - 1);
+        if (!depth) zone.hidden = true;
+    });
+    main.addEventListener("drop", (e) => {
+        if (!hasFiles(e)) return;
+        e.preventDefault();
+        depth = 0;
+        zone.hidden = true;
+        const file = e.dataTransfer.files?.[0];
+        if (file) uploadFile(file);
     });
 }
 
-function openPasswordResetUI() {
-    passwordRecoveryMode = true;
 
-    const modal = document.getElementById("authModal");
-    const title = document.getElementById("authTitle");
-    const nameField = document.getElementById("authNameField");
-    const passwordField = document.getElementById("authPasswordField");
-    const confirmPasswordField = document.getElementById("authConfirmPasswordField");
-    const forgotButton = document.getElementById("forgotPasswordButton");
-    const submitButton = document.getElementById("authSubmitButton");
-    const googleButton = document.getElementById("googleAuthButton");
-    const modeButton = document.getElementById("authModeButton");
-    const emailField = document.getElementById("authEmail");
+/* =====================================================
+   VOICE INPUT (Listening → Transcribing → Done)
+   ===================================================== */
 
-    if (!modal || !submitButton) {
-        return;
-    }
+const voice = {
+    recorder: null,
+    stream: null,
+    chunks: [],
+    timer: null,
+    started: 0,
 
-    title.textContent = "Reset password";
-    nameField.style.display = "none";
-    emailField.style.display = "none";
-    passwordField.style.display = "block";
-    confirmPasswordField.style.display = "block";
-    forgotButton.style.display = "none";
-    submitButton.textContent = "Update password";
-    googleButton.style.display = "none";
-    modeButton.style.display = "none";
+    setState(mode, label = "") {
+        const button = $("voiceButton");
+        const panel = $("voicePanel");
+        button.dataset.state = mode;
+        panel.hidden = mode === "idle";
+        $("userInput").classList.toggle("dimmed", mode !== "idle");
+        $("voiceLabel").textContent = label;
+        button.setAttribute("aria-label", mode === "listening" ? "Stop recording" : "Voice input");
+        button.title = mode === "listening" ? "Stop recording" : "Voice input";
+        button.disabled = mode === "transcribing";
+        panel.dataset.state = mode;
+    },
 
-    const password = document.getElementById("authPassword");
-    password.value = "";
-    password.placeholder = "New password";
-    password.autocomplete = "new-password";
+    mimeType() {
+        if (!window.MediaRecorder) return "";
+        return ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"]
+            .find((t) => MediaRecorder.isTypeSupported(t)) || "";
+    },
 
-    document.getElementById("authConfirmPassword").value = "";
+    async start() {
+        if (!Auth.user) {
+            AuthModal.open("login", { message: "Please log in to use voice input." });
+            return;
+        }
+        if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+            Toast.error("Voice input is not supported by this browser.");
+            return;
+        }
+        try {
+            voice.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch (error) {
+            Toast.error(error?.name === "NotAllowedError"
+                ? "Microphone access was blocked. Allow it in your browser's site settings and try again."
+                : "No microphone could be accessed.");
+            return;
+        }
 
-    modal.style.display = "flex";
-    modal.style.zIndex = "10000";
-    authMessage("Enter your new password.");
-}
+        const type = voice.mimeType();
+        voice.chunks = [];
+        voice.recorder = type ? new MediaRecorder(voice.stream, { mimeType: type }) : new MediaRecorder(voice.stream);
+        voice.recorder.ondataavailable = (e) => { if (e.data?.size) voice.chunks.push(e.data); };
+        voice.recorder.onstop = () => voice.transcribe();
+        voice.recorder.start();
 
-async function logoutUser() {
-    if (!supabaseClient) {
-        return;
-    }
+        voice.started = Date.now();
+        voice.setState("listening", "Listening… tap stop when you're done");
+        const timerEl = $("voiceTimer");
+        timerEl.textContent = "0:00";
+        voice.timer = setInterval(() => {
+            const s = Math.floor((Date.now() - voice.started) / 1000);
+            timerEl.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+            if (s >= 120) voice.stop();           // keep clips small
+        }, 250);
+    },
 
-    const { error } =
-        await supabaseClient.auth.signOut();
+    stop() {
+        clearInterval(voice.timer);
+        if (voice.recorder?.state !== "inactive") voice.recorder?.stop();
+        voice.stream?.getTracks().forEach((t) => t.stop());
+        voice.stream = null;
+    },
 
-    if (error) {
-        console.error(
-            "Logout failed:",
-            error
-        );
-        return;
-    }
+    async transcribe() {
+        const type = voice.recorder?.mimeType || "audio/webm";
+        const blob = new Blob(voice.chunks, { type });
+        voice.recorder = null;
+        voice.chunks = [];
 
-    currentSession = null;
-    currentUser = null;
-    __addUserMessageImpl = null;
-    __addBotMessageImpl = null;
-    await refreshAuthUI();
-}
+        if (blob.size < 1200) {
+            voice.setState("idle");
+            Toast.info("That recording was too short. Try again.");
+            return;
+        }
 
-async function getCurrentSession() {
-    if (!supabaseClient) {
-        return null;
-    }
+        voice.setState("transcribing", "Transcribing…");
+        const extension = type.includes("ogg") ? "ogg" : type.includes("mp4") ? "mp4" : "webm";
+        const form = new FormData();
+        form.append("file", blob, `voice-${Date.now()}.${extension}`);
 
-    const {
-        data: { session }
-    } = await supabaseClient.auth.getSession();
-
-    currentSession = session || null;
-    currentUser = session?.user || null;
-
-    return currentSession;
-}
-
-async function getAuthHeaders() {
-    const session =
-        await getCurrentSession();
-
-    if (!session?.access_token) {
-        return {};
-    }
-
-    return {
-        Authorization:
-            `Bearer ${session.access_token}`
-    };
-}
-
-window.auth = {
-    signUp: signUpWithEmail,
-    login: loginWithEmail,
-    googleLogin: loginWithGoogle,
-    forgotPassword: sendPasswordResetEmail,
-    updatePassword,
-    logout: logoutUser,
-    getSession: getCurrentSession,
-    getHeaders: getAuthHeaders,
-    getUser: () => currentUser
+        try {
+            const data = await Api.request("/voice/transcribe", { method: "POST", body: form });
+            const text = (data?.text || "").trim();
+            if (!text) {
+                Toast.info("No speech was detected. Please try again.");
+            } else {
+                const input = $("userInput");
+                input.value = input.value ? `${input.value.trim()} ${text}` : text;
+                autoGrow();
+                input.focus();
+                Toast.success("Transcribed — review and press Enter to send.");
+            }
+        } catch (error) {
+            Toast.error(error.message);
+        } finally {
+            voice.setState("idle");
+        }
+    },
 };
+
+
+/* =====================================================
+   AUTH-AWARE UI
+   ===================================================== */
+
+function applyAuthState() {
+    const loggedIn = Boolean(Auth.user);
+    const input = $("userInput");
+    input.placeholder = loggedIn ? "Ask anything…" : "Log in to start chatting";
+    document.body.classList.toggle("logged-out", !loggedIn);
+
+    if (!loggedIn) {
+        state.conversationId = null;
+        state.conversations = [];
+        clearAttachment();
+    }
+
+    if (!state.streaming) chat.welcome();
+    sidebar.load({ openLatest: false });
+}
 
 
 /* =====================================================
    INIT
    ===================================================== */
 
-document.addEventListener(
-    "DOMContentLoaded",
-    () => {
+document.addEventListener("DOMContentLoaded", () => {
+    const input = $("userInput");
 
-        initBackground();
+    chat.welcome();
+    sidebar.skeleton();
 
-        createAuthUI();
-        initSupabaseAuth();
-
-
-        const toggle =
-            document.getElementById(
-                "themeToggle"
-            );
-
-
-        if (toggle) {
-
-            toggle.addEventListener(
-                "click",
-                () => {
-
-                    const current =
-                        document.documentElement
-                            .getAttribute(
-                                "data-theme"
-                            );
-
-
-                    applyTheme(
-                        current === "dark"
-                            ? "light"
-                            : "dark"
-                    );
-                }
-            );
-        }
-
-
-        checkBackend();
-
-        setInterval(
-            checkBackend,
-            15000
-        );
-
-
-        if (
-            document.getElementById(
-                "chatMessages"
-            )
-        ) {
-
-            initChat();
-        }
-
-        // Offer account creation after a short guest period, while
-        // keeping the chatbot fully usable without an account.
-        setTimeout(showGuestAuthPrompt, 5000);
-    }
-);
-
-
-/* =====================================================
-   BACKEND STATUS
-   ===================================================== */
-
-async function checkBackend() {
-
-    const status =
-        document.getElementById(
-            "status"
-        );
-
-    const text =
-        document.getElementById(
-            "statusText"
-        );
-
-
-    if (!status) {
-        return;
-    }
-
-
-    try {
-
-        const res =
-            await fetch(
-                STATUS_URL,
-                {
-                    method: "GET"
-                }
-            );
-
-
-        if (!res.ok) {
-            throw new Error(
-                "bad status"
-            );
-        }
-
-
-        status.className =
-            "status online";
-
-
-        text.textContent =
-            "Backend Online";
-
-    } catch (err) {
-
-        status.className =
-            "status offline";
-
-
-        text.textContent =
-            "Backend Offline";
-    }
-}
-
-
-/* =====================================================
-   GLOBAL CHAT MESSAGE BRIDGE
-   ===================================================== */
-
-let __addUserMessageImpl = null;
-let __addBotMessageImpl = null;
-
-function addUserMessage(message) {
-    if (typeof __addUserMessageImpl === "function") {
-        return __addUserMessageImpl(message);
-    }
-    console.warn("Chat UI is not initialized yet.");
-}
-
-function addBotMessage(message, route = "", isError = false, sources = []) {
-    if (typeof __addBotMessageImpl === "function") {
-        return __addBotMessageImpl(message, route, isError, sources);
-    }
-    console.warn("Chat UI is not initialized yet.");
-}
-
-/* =====================================================
-   CONVERSATIONS / CHAT HISTORY
-   ===================================================== */
-
-async function getJSON(url, options = {}) {
-    const headers = await getRequestHeaders(
-        options.headers || {}
-    );
-
-    const response = await fetch(url, {
-        ...options,
-        headers
+    $("composer").addEventListener("submit", (event) => {
+        event.preventDefault();
+        if (state.streaming) state.streaming.abort();
+        else sendMessage();
     });
 
-    let data = null;
-
-    try {
-        data = await response.json();
-    } catch (_) {
-        data = null;
-    }
-
-    if (!response.ok) {
-        throw new Error(
-            data?.detail ||
-            data?.message ||
-            `HTTP error: ${response.status}`
-        );
-    }
-
-    return data;
-}
-
-
-async function loadConversations() {
-    const chatList =
-        document.getElementById("chatList");
-
-    if (!chatList) return;
-
-    try {
-        const data =
-            await getJSON(CONVERSATIONS_URL);
-
-        conversations =
-            data.conversations || [];
-
-        renderConversationList();
-
-        if (
-            !currentConversationId &&
-            conversations.length
-        ) {
-            await openConversation(
-                conversations[0].id
-            );
+    input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+            event.preventDefault();
+            if (!state.streaming) sendMessage();
         }
-
-    } catch (error) {
-        console.error(
-            "Unable to load conversations:",
-            error
-        );
-    }
-}
-
-
-function renderConversationList() {
-    const chatList =
-        document.getElementById("chatList");
-
-    if (!chatList) return;
-
-    chatList.innerHTML = "";
-
-    conversations.forEach(
-        (conversation) => {
-
-            const item =
-                document.createElement("li");
-
-            item.className =
-                "chat-item" +
-                (
-                    conversation.id ===
-                    currentConversationId
-                        ? " active"
-                        : ""
-                );
-
-            item.dataset.conversationId =
-                conversation.id;
-
-            item.textContent =
-                conversation.title ||
-                "New Chat";
-
-            chatList.appendChild(item);
-        }
-    );
-}
-
-
-async function createNewConversation() {
-    try {
-        const data =
-            await getJSON(
-                CONVERSATIONS_URL,
-                {
-                    method: "POST",
-                    headers: {
-                        "Content-Type":
-                            "application/json"
-                    },
-                    body: JSON.stringify({
-                        title: "New Chat"
-                    })
-                }
-            );
-
-        const conversation =
-            data.conversation;
-
-        if (!conversation) {
-            throw new Error(
-                "Conversation was not returned by backend."
-            );
-        }
-
-        currentConversationId =
-            conversation.id;
-
-        conversations = [
-            conversation,
-            ...conversations.filter(
-                (item) =>
-                    item.id !== conversation.id
-            )
-        ];
-
-        renderConversationList();
-        resetChatUI();
-
-        return conversation;
-
-    } catch (error) {
-        console.error(
-            "Create conversation failed:",
-            error
-        );
-
-        alert(
-            error.message ||
-            "Unable to create conversation."
-        );
-
-        return null;
-    }
-}
-
-
-async function openConversation(
-    conversationId
-) {
-    if (!conversationId) return;
-
-    try {
-        const data =
-            await getJSON(
-                CONVERSATION_MESSAGES_URL(
-                    conversationId
-                )
-            );
-
-        currentConversationId =
-            conversationId;
-
-        renderConversationList();
-        resetChatUI();
-
-        (data.messages || []).forEach(
-            (message) => {
-
-                const role =
-                    String(
-                        message.role || ""
-                    ).toUpperCase();
-
-                if (role === "USER") {
-                    addUserMessage(
-                        message.content || ""
-                    );
-                }
-
-                if (role === "ASSISTANT") {
-                    addBotMessage(
-                        message.content || "",
-                        message.route || "",
-                        false,
-                        message.metadata?.sources || []
-                    );
-                }
-            }
-        );
-
-    } catch (error) {
-        console.error(
-            "Load conversation failed:",
-            error
-        );
-
-        alert(
-            error.message ||
-            "Unable to load conversation."
-        );
-    }
-}
-
-
-function resetChatUI() {
-    const chatInner =
-        document.getElementById("chatInner");
-
-    if (!chatInner) return;
-
-    chatInner.innerHTML = `
-        <div class="hero-empty">
-            <div class="hero-logo">
-                <img
-                    src="/frontend/assets/logo/logo.svg"
-                    width="52"
-                    height="52"
-                    alt=""
-                >
-            </div>
-
-            <h2>Hello! I'm your Agentic AI assistant.</h2>
-
-            <p>
-                Ask me a question and I'll decide
-                which specialized route should handle it.
-            </p>
-
-            <div class="chips">
-                <button
-                    class="chip"
-                    data-prompt="Explain how neural networks learn"
-                >
-                    <span class="dot dot-direct"></span>
-                    Explain how neural networks learn
-                    <em>DIRECT</em>
-                </button>
-
-                <button
-                    class="chip"
-                    data-prompt="Who was Alan Turing?"
-                >
-                    <span class="dot dot-wikipedia"></span>
-                    Who was Alan Turing?
-                    <em>WIKIPEDIA</em>
-                </button>
-
-                <button
-                    class="chip"
-                    data-prompt="What is the latest AI news today?"
-                >
-                    <span class="dot dot-tavily"></span>
-                    What is the latest AI news today?
-                    <em>TAVILY</em>
-                </button>
-
-                <button
-                    class="chip"
-                    data-prompt="Find research papers about RAG"
-                >
-                    <span class="dot dot-arxiv"></span>
-                    Find research papers about RAG
-                    <em>ARXIV</em>
-                </button>
-            </div>
-        </div>
-    `;
-}
-
-
-async function refreshConversationList() {
-    await loadConversations();
-}
-
-
-/* =====================================================
-   CHAT
-   ===================================================== */
-
-
-/* =====================================================
-   VOICE SEARCH / VOICE INPUT
-   ===================================================== */
-
-function getSupportedAudioMimeType() {
-    const types = [
-        "audio/webm;codecs=opus",
-        "audio/webm",
-        "audio/ogg;codecs=opus",
-        "audio/mp4"
-    ];
-
-    if (!window.MediaRecorder) return "";
-
-    for (const type of types) {
-        if (MediaRecorder.isTypeSupported(type)) {
-            return type;
-        }
-    }
-
-    return "";
-}
-
-async function transcribeRecordedAudio(blob) {
-    const formData = new FormData();
-
-    const extension =
-        blob.type.includes("ogg")
-            ? "ogg"
-            : blob.type.includes("mp4")
-                ? "mp4"
-                : "webm";
-
-    formData.append(
-        "file",
-        blob,
-        `voice-${Date.now()}.${extension}`
-    );
-
-    const response = await fetch(
-        VOICE_TRANSCRIBE_URL,
-        {
-            method: "POST",
-            headers: await getRequestHeaders(),
-            body: formData
-        }
-    );
-
-    let data = null;
-
-    try {
-        data = await response.json();
-    } catch (_) {
-        data = null;
-    }
-
-    if (!response.ok) {
-        throw new Error(
-            data?.detail ||
-            data?.message ||
-            `Voice transcription failed: HTTP ${response.status}`
-        );
-    }
-
-    const text =
-        data?.text ||
-        data?.transcription ||
-        data?.transcript ||
-        "";
-
-    if (!text.trim()) {
-        throw new Error("No speech was detected.");
-    }
-
-    return text.trim();
-}
-
-async function startVoiceRecording(voiceButton, userInput) {
-    if (!navigator.mediaDevices?.getUserMedia) {
-        alert("Microphone recording is not supported by this browser.");
-        return;
-    }
-
-    if (!window.MediaRecorder) {
-        alert("MediaRecorder is not supported by this browser.");
-        return;
-    }
-
-    try {
-        voiceStream =
-            await navigator.mediaDevices.getUserMedia({
-                audio: true
-            });
-
-        voiceChunks = [];
-
-        const mimeType =
-            getSupportedAudioMimeType();
-
-        mediaRecorder = mimeType
-            ? new MediaRecorder(
-                voiceStream,
-                { mimeType }
-            )
-            : new MediaRecorder(voiceStream);
-
-        mediaRecorder.addEventListener(
-            "dataavailable",
-            (event) => {
-                if (event.data?.size > 0) {
-                    voiceChunks.push(event.data);
-                }
-            }
-        );
-
-        mediaRecorder.addEventListener(
-            "stop",
-            async () => {
-                const recordedType =
-                    mediaRecorder?.mimeType ||
-                    mimeType ||
-                    "audio/webm";
-
-                const blob =
-                    new Blob(
-                        voiceChunks,
-                        { type: recordedType }
-                    );
-
-                voiceChunks = [];
-
-                if (voiceStream) {
-                    voiceStream
-                        .getTracks()
-                        .forEach(
-                            (track) => track.stop()
-                        );
-                }
-
-                voiceStream = null;
-
-                try {
-                    voiceButton.disabled = true;
-                    voiceButton.classList.remove("recording");
-                    voiceButton.classList.add("processing");
-                    voiceButton.title = "Transcribing...";
-
-                    const text =
-                        await transcribeRecordedAudio(blob);
-
-                    userInput.value = text;
-                    userInput.focus();
-
-                    userInput.dispatchEvent(
-                        new Event("input", { bubbles: true })
-                    );
-                } catch (error) {
-                    console.error(
-                        "Voice transcription error:",
-                        error
-                    );
-
-                    alert(
-                        error.message ||
-                        "Unable to transcribe voice."
-                    );
-                } finally {
-                    voiceButton.disabled = false;
-                    voiceButton.classList.remove("processing");
-                    voiceButton.title = "Search by voice";
-                    isRecordingVoice = false;
-                    mediaRecorder = null;
-                }
-            }
-        );
-
-        mediaRecorder.start();
-        isRecordingVoice = true;
-
-        voiceButton.classList.add("recording");
-        voiceButton.title = "Recording... Click to stop";
-
-    } catch (error) {
-        console.error(
-            "Microphone access error:",
-            error
-        );
-
-        if (error?.name === "NotAllowedError") {
-            alert(
-                "Microphone permission was denied. Please allow microphone access in Chrome."
-            );
-        } else {
-            alert(
-                error?.message ||
-                "Unable to access microphone."
-            );
-        }
-
-        if (voiceStream) {
-            voiceStream
-                .getTracks()
-                .forEach(
-                    (track) => track.stop()
-                );
-        }
-
-        voiceStream = null;
-        isRecordingVoice = false;
-    }
-}
-
-function stopVoiceRecording() {
-    if (
-        mediaRecorder &&
-        mediaRecorder.state !== "inactive"
-    ) {
-        mediaRecorder.stop();
-    }
-}
-
-function createVoiceButton(inputContainer, userInput) {
-    if (!inputContainer) {
-        return null;
-    }
-
-    let button =
-        document.getElementById("voiceSearchButton");
-
-    if (button) {
-        // The microphone button is now present in index.html.
-        // Bind the click handler here instead of creating another button.
-        if (!button.dataset.voiceBound) {
-            button.dataset.voiceBound = "true";
-
-            button.addEventListener(
-                "click",
-                async () => {
-                    if (isRecordingVoice) {
-                        stopVoiceRecording();
-                        return;
-                    }
-
-                    await startVoiceRecording(
-                        button,
-                        userInput
-                    );
-                }
-            );
-        }
-
-        return button;
-    }
-
-    button =
-        document.createElement("button");
-
-    button.id = "voiceSearchButton";
-    button.type = "button";
-    button.className = "voice-search-button";
-    button.title = "Search by voice";
-    button.setAttribute(
-        "aria-label",
-        "Search by voice"
-    );
-
-    button.innerHTML = `
-        <svg
-            width="20"
-            height="20"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-        >
-            <rect
-                x="9"
-                y="2"
-                width="6"
-                height="12"
-                rx="3"
-            ></rect>
-            <path d="M5 10a7 7 0 0 0 14 0"></path>
-            <line x1="12" y1="19" x2="12" y2="22"></line>
-            <line x1="8" y1="22" x2="16" y2="22"></line>
-        </svg>
-    `;
-
-    if (!button.dataset.voiceBound) {
-        button.dataset.voiceBound = "true";
-
-        button.addEventListener(
-            "click",
-            async () => {
-                if (isRecordingVoice) {
-                    stopVoiceRecording();
-                    return;
-                }
-
-                await startVoiceRecording(
-                    button,
-                    userInput
-                );
-            }
-        );
-    }
-
-    const sendButton =
-        document.getElementById("sendButton");
-
-    if (
-        sendButton &&
-        sendButton.parentElement === inputContainer
-    ) {
-        inputContainer.insertBefore(
-            button,
-            sendButton
-        );
-    } else {
-        inputContainer.appendChild(button);
-    }
-
-    return button;
-}
-
-function initChat() {
-
-    const userInput =
-        document.getElementById(
-            "userInput"
-        );
-
-    const sendButton =
-        document.getElementById(
-            "sendButton"
-        );
-
-    const chatMessages =
-        document.getElementById(
-            "chatMessages"
-        );
-
-    const chatInner =
-        document.getElementById(
-            "chatInner"
-        );
-
-    const sidebar =
-        document.getElementById(
-            "sidebar"
-        );
-
-    const overlay =
-        document.getElementById(
-            "overlay"
-        );
-
-    const menuButton =
-        document.getElementById(
-            "menuButton"
-        );
-
-    const newChatButton =
-        document.getElementById(
-            "newChatButton"
-        );
-
-    const chatList =
-        document.getElementById(
-            "chatList"
-        );
-
-    const inputContainer =
-        sendButton?.parentElement;
-
-    createVoiceButton(
-        inputContainer,
-        userInput
-    );
-
-    if (!document.getElementById("voiceSearchStyles")) {
-        const voiceStyle =
-            document.createElement("style");
-
-        voiceStyle.id =
-            "voiceSearchStyles";
-
-        voiceStyle.textContent = `
-            .voice-search-button {
-                width: 44px;
-                height: 44px;
-                border: 1px solid rgba(99,102,241,.35);
-                border-radius: 12px;
-                background: transparent;
-                color: inherit;
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                cursor: pointer;
-                flex-shrink: 0;
-                transition: transform .15s ease, background .15s ease;
-            }
-
-            .voice-search-button:hover {
-                transform: translateY(-1px);
-                background: rgba(99,102,241,.10);
-            }
-
-            .voice-search-button.recording {
-                background: rgba(239,68,68,.14);
-                border-color: rgba(239,68,68,.65);
-                color: #ef4444;
-                animation: voicePulse 1.1s infinite;
-            }
-
-            .voice-search-button.processing {
-                opacity: .65;
-                cursor: wait;
-            }
-
-            @keyframes voicePulse {
-                0%, 100% { transform: scale(1); }
-                50% { transform: scale(1.08); }
-            }
-        `;
-
-        document.head.appendChild(voiceStyle);
-    }
-
-
-    document.body.classList.add(
-        "has-sidebar"
-    );
-
-
-    const welcomeHTML =
-        chatInner.innerHTML;
-
-
-    /* =================================================
-       HELPERS
-       ================================================= */
-
-    function scrollToBottom() {
-
-        chatMessages.scrollTop =
-            chatMessages.scrollHeight;
-    }
-
-
-    function escapeHTML(str) {
-
-        return String(str)
-            .replace(
-                /&/g,
-                "&amp;"
-            )
-            .replace(
-                /</g,
-                "&lt;"
-            )
-            .replace(
-                />/g,
-                "&gt;"
-            );
-    }
-
-
-    function timeNow() {
-
-        return new Date()
-            .toLocaleTimeString(
-                [],
-                {
-                    hour: "2-digit",
-                    minute: "2-digit"
-                }
-            );
-    }
-
-
-    /* =================================================
-       MARKDOWN RENDERER
-       ================================================= */
-
-    function renderMarkdown(src) {
-
-        const blocks = [];
-
-
-        let text =
-            escapeHTML(
-                src || ""
-            );
-
-
-        /* Code blocks */
-
-        text = text.replace(
-            /```(?:\w+)?\n?([\s\S]*?)```/g,
-            (_, code) => {
-
-                blocks.push(
-                    `<pre><code>${code.trim()}</code></pre>`
-                );
-
-                return `@@BLOCK${blocks.length - 1}@@`;
-            }
-        );
-
-
-        const inline = (s) => {
-
-            return s
-
-                /* Inline code */
-                .replace(
-                    /`([^`]+)`/g,
-                    "<code>$1</code>"
-                )
-
-                /* Bold */
-                .replace(
-                    /\*\*([^*]+)\*\*/g,
-                    "<strong>$1</strong>"
-                )
-
-                /* Italic */
-                .replace(
-                    /(^|[^*])\*([^*\n]+)\*/g,
-                    "$1<em>$2</em>"
-                )
-
-                /* Markdown links */
-                .replace(
-                    /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
-                    '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
-                )
-
-                /* Plain URLs */
-                .replace(
-                    /(^|[\s(])(https?:\/\/[^\s<)]+)/g,
-                    '$1<a href="$2" target="_blank" rel="noopener noreferrer">$2</a>'
-                );
-        };
-
-
-        const out = [];
-
-        let list = null;
-
-
-        const closeList = () => {
-
-            if (list) {
-
-                out.push(
-                    `</${list}>`
-                );
-
-                list = null;
-            }
-        };
-
-
-        text.split("\n")
-            .forEach((line) => {
-
-                const ul =
-                    line.match(
-                        /^\s*[-*]\s+(.*)/
-                    );
-
-
-                const ol =
-                    line.match(
-                        /^\s*\d+\.\s+(.*)/
-                    );
-
-
-                const h =
-                    line.match(
-                        /^(#{1,3})\s+(.*)/
-                    );
-
-
-                if (ul || ol) {
-
-                    const tag =
-                        ul ? "ul" : "ol";
-
-
-                    if (list !== tag) {
-
-                        closeList();
-
-                        out.push(
-                            `<${tag}>`
-                        );
-
-                        list = tag;
-                    }
-
-
-                    out.push(
-                        `<li>${inline(
-                            (ul || ol)[1]
-                        )}</li>`
-                    );
-
-                } else {
-
-                    closeList();
-
-
-                    if (h) {
-
-                        out.push(
-                            `<h3>${inline(
-                                h[2]
-                            )}</h3>`
-                        );
-
-                    } else if (
-                        line.trim() === ""
-                    ) {
-
-                        out.push("");
-
-                    } else if (
-                        /^@@BLOCK\d+@@$/.test(
-                            line.trim()
-                        )
-                    ) {
-
-                        out.push(
-                            line.trim()
-                        );
-
-                    } else {
-
-                        out.push(
-                            `<p>${inline(
-                                line
-                            )}</p>`
-                        );
-                    }
-                }
-            });
-
-
-        closeList();
-
-
-        return out
-            .join("")
-            .replace(
-                /@@BLOCK(\d+)@@/g,
-                (_, i) => blocks[i]
-            );
-    }
-
-
-    /* =================================================
-       HERO
-       ================================================= */
-
-    function removeHero() {
-
-        const hero =
-            chatInner.querySelector(
-                ".hero-empty"
-            );
-
-
-        if (hero) {
-            hero.remove();
-        }
-    }
-
-
-    /* =================================================
-       CREATE MESSAGE
-       ================================================= */
-
-    function createMessage(type) {
-
-        const wrap =
-            document.createElement(
-                "div"
-            );
-
-
-        wrap.className =
-            `message ${
-                type === "user"
-                    ? "user-message"
-                    : "bot-message"
-            }`;
-
-
-        const avatar =
-            document.createElement(
-                "div"
-            );
-
-
-        avatar.className =
-            "avatar";
-
-
-        avatar.textContent =
-            type === "user"
-                ? "You"
-                : "AI";
-
-
-        const content =
-            document.createElement(
-                "div"
-            );
-
-
-        content.className =
-            "message-content";
-
-
-        if (type === "user") {
-
-            const name =
-                document.createElement(
-                    "div"
-                );
-
-
-            name.className =
-                "message-name";
-
-
-            name.innerHTML =
-                `<span>You</span>` +
-                `<span class="message-time">${timeNow()}</span>`;
-
-
-            content.appendChild(
-                name
-            );
-        }
-
-
-        wrap.appendChild(
-            avatar
-        );
-
-        wrap.appendChild(
-            content
-        );
-
-        chatInner.appendChild(
-            wrap
-        );
-
-
-        return {
-            wrap,
-            content
-        };
-    }
-
-
-    /* =================================================
-       USER MESSAGE
-       ================================================= */
-
-    function addUserMessage(message) {
-
-        removeHero();
-
-
-        const { content } =
-            createMessage(
-                "user"
-            );
-
-
-        const text =
-            document.createElement(
-                "div"
-            );
-
-
-        text.className =
-            "message-text";
-
-
-        text.textContent =
-            message;
-
-
-        content.appendChild(
-            text
-        );
-
-
-        scrollToBottom();
-    }
-
-    __addUserMessageImpl = addUserMessage;
-
-
-    /* =================================================
-       BOT MESSAGE
-       ================================================= */
-
-    function addBotMessage(
-        message,
-        route = "",
-        isError = false,
-        sources = []
-    ) {
-
-        const { content } =
-            createMessage(
-                "bot"
-            );
-
-
-        const safeRoute =
-            ROUTES.includes(route)
-                ? route
-                : "";
-
-
-        const card =
-            document.createElement(
-                "div"
-            );
-
-
-        card.className =
-            "answer-card" +
-            (
-                safeRoute
-                    ? ` route-${safeRoute}`
-                    : ""
-            ) +
-            (
-                isError
-                    ? " is-error"
-                    : ""
-            );
-
-
-        const head =
-            document.createElement(
-                "div"
-            );
-
-
-        head.className =
-            "answer-head";
-
-
-        head.innerHTML =
-            `<strong>AI Assistant</strong>` +
-
-            (
-                safeRoute
-                    ? `<span class="route-badge route-${safeRoute}">${safeRoute}</span>`
-                    : ""
-            ) +
-
-            `<span class="message-time">${timeNow()}</span>`;
-
-
-        const body =
-            document.createElement(
-                "div"
-            );
-
-
-        body.className =
-            "answer-body";
-
-
-        if (isError) {
-
-            body.innerHTML =
-                `<div class="error-text">${escapeHTML(message)}</div>` +
-                `<div class="error-sub">Please make sure the FastAPI server is running.</div>`;
-
-        } else {
-
-            body.innerHTML =
-                renderMarkdown(
-                    message
-                );
-        }
-
-
-        [...body.children]
-            .forEach(
-                (el, i) => {
-
-                    el.style.animationDelay =
-                        `${Math.min(
-                            i * 70,
-                            700
-                        )}ms`;
-                }
-            );
-
-
-        card.appendChild(
-            head
-        );
-
-        card.appendChild(
-            body
-        );
-
-
-        /* =================================================
-           SOURCES
-           ================================================= */
-
-        if (
-            !isError &&
-            sources.length > 0
-        ) {
-
-            const sourcesBox =
-                document.createElement(
-                    "div"
-                );
-
-
-            sourcesBox.className =
-                "sources-box";
-
-
-            const sourcesTitle =
-                document.createElement(
-                    "div"
-                );
-
-
-            sourcesTitle.className =
-                "sources-title";
-
-
-            sourcesTitle.textContent =
-                "Sources";
-
-
-            sourcesBox.appendChild(
-                sourcesTitle
-            );
-
-
-            sources.forEach(
-                (source) => {
-
-                    if (!source.url) {
-                        return;
-                    }
-
-
-                    const sourceLink =
-                        document.createElement(
-                            "a"
-                        );
-
-
-                    sourceLink.href =
-                        source.url;
-
-
-                    sourceLink.target =
-                        "_blank";
-
-
-                    sourceLink.rel =
-                        "noopener noreferrer";
-
-
-                    sourceLink.className =
-                        "source-link";
-
-
-                    sourceLink.textContent =
-                        source.title ||
-                        source.url;
-
-
-                    sourcesBox.appendChild(
-                        sourceLink
-                    );
-                }
-            );
-
-
-            card.appendChild(
-                sourcesBox
-            );
-        }
-
-
-        /* =================================================
-           FOOTER
-           ================================================= */
-
-        if (!isError) {
-
-            const foot =
-                document.createElement(
-                    "div"
-                );
-
-
-            foot.className =
-                "answer-foot";
-
-
-            const trace =
-                document.createElement(
-                    "div"
-                );
-
-
-            trace.className =
-                "trace";
-
-
-            trace.innerHTML =
-                safeRoute
-
-                    ? `<span class="step">User</span><i>→</i>` +
-                      `<span class="step">Router</span><i>→</i>` +
-                      `<span class="route-badge route-${safeRoute}">${safeRoute}</span>` +
-                      `<i>→</i>` +
-                      `<span class="step">Groq LLM</span>`
-
-                    : "";
-
-
-            const copy =
-                document.createElement(
-                    "button"
-                );
-
-
-            copy.className =
-                "copy-btn";
-
-
-            copy.type =
-                "button";
-
-
-            copy.textContent =
-                "Copy";
-
-
-            copy.addEventListener(
-                "click",
-                async () => {
-
-                    try {
-
-                        await navigator
-                            .clipboard
-                            .writeText(
-                                message
-                            );
-
-
-                        copy.textContent =
-                            "Copied ✓";
-
-                    } catch (e) {
-
-                        copy.textContent =
-                            "Failed";
-                    }
-
-
-                    setTimeout(
-                        () => {
-
-                            copy.textContent =
-                                "Copy";
-
-                        },
-                        1500
-                    );
-                }
-            );
-
-
-            foot.appendChild(
-                trace
-            );
-
-            foot.appendChild(
-                copy
-            );
-
-
-            card.appendChild(
-                foot
-            );
-        }
-
-
-        content.appendChild(
-            card
-        );
-
-
-        scrollToBottom();
-    }
-
-    __addBotMessageImpl = addBotMessage;
-
-
-    /* =================================================
-       ROUTER ANIMATION
-       ================================================= */
-
-    function createRouterPanel() {
-
-        const {
-            wrap,
-            content
-        } = createMessage(
-            "bot"
-        );
-
-
-        const panel =
-            document.createElement(
-                "div"
-            );
-
-
-        panel.className =
-            "router-panel";
-
-
-        panel.innerHTML = `
-
-            <div class="router-bar"></div>
-
-            <div class="router-head">
-
-                <svg
-                    width="16"
-                    height="16"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                >
-
-                    <path
-                        d="M13 2 3 14h9l-1 8 10-12h-9z"
-                    />
-
-                </svg>
-
-                LangGraph Router
-
-                <span class="state-done">
-                    ✓ Route selected
-                </span>
-
-            </div>
-
-
-            <div class="router-status">
-                Analyzing your question
-                <span class="dots">
-                    <span>.</span>
-                    <span>.</span>
-                    <span>.</span>
-                </span>
-            </div>
-
-
-            <div class="router-flow">
-
-                <span class="node">
-                    USER QUESTION
-                </span>
-
-                ↓
-
-                <span class="node">
-                    ROUTER
-                </span>
-
-                ↓
-
-            </div>
-
-
-            <div class="route-grid">
-
-                ${ROUTES.map(
-                    (r) => `
-
-                    <div
-                        class="route-card"
-                        data-route="${r}"
-                    >
-
-                        <span class="marker"></span>
-
-                        ${r}
-
-                    </div>
-
-                `
-                ).join("")}
-
-            </div>
-        `;
-
-
-        content.appendChild(
-            panel
-        );
-
-
-        scrollToBottom();
-
-
-        const statusEl =
-            panel.querySelector(
-                ".router-status"
-            );
-
-
-        const cards =
-            [
-                ...panel.querySelectorAll(
-                    ".route-card"
-                )
-            ];
-
-
-        const setStatus =
-            (
-                msg,
-                dots = true
-            ) => {
-
-                statusEl.innerHTML =
-                    msg +
-                    (
-                        dots
-
-                            ? ` <span class="dots">` +
-                              `<span>.</span>` +
-                              `<span>.</span>` +
-                              `<span>.</span>` +
-                              `</span>`
-
-                            : ""
-                    );
-            };
-
-
-        let scanningIndex = 0;
-
-
-        const startScanning = () => {
-
-            cards.forEach(
-                (c) =>
-                    c.classList.remove(
-                        "scanning"
-                    )
-            );
-
-
-            if (cards.length > 0) {
-
-                cards[
-                    scanningIndex % cards.length
-                ].classList.add(
-                    "scanning"
-                );
-
-                scanningIndex++;
-            }
-        };
-
-
-        const scanningInterval =
-            setInterval(
-                startScanning,
-                380
-            );
-
-
-        return {
-            wrap,
-            panel,
-            statusEl,
-            cards,
-            setStatus,
-            scanningInterval
-        };
-    }
-
-
-    /* =================================================
-       UPDATE ROUTER
-       ================================================= */
-
-    async function resolveRouterAnimation(
-        routerUI,
-        route
-    ) {
-
-        const safeRoute =
-            ROUTES.includes(route)
-                ? route
-                : "DIRECT";
-
-
-        clearInterval(
-            routerUI.scanningInterval
-        );
-
-
-        routerUI.cards.forEach(
-            (card) => {
-
-                card.classList.remove(
-                    "scanning"
-                );
-
-
-                if (
-                    card.dataset.route ===
-                    safeRoute
-                ) {
-
-                    card.classList.add(
-                        "selected"
-                    );
-
-                } else {
-
-                    card.classList.add(
-                        "faded"
-                    );
-                }
-            }
-        );
-
-
-        routerUI.panel.classList.add(
-            "resolved"
-        );
-
-
-        routerUI.setStatus(
-            `Route selected: <strong>${escapeHTML(safeRoute)}</strong>`,
-            false
-        );
-
-
-        await sleep(700);
-
-
-        routerUI.setStatus(
-            ROUTE_STATUS[safeRoute] ||
-            "Processing...",
-            false
-        );
-
-
-        await sleep(500);
-
-
-        routerUI.wrap.remove();
-
-
-        return safeRoute;
-    }
-
-
-    /* =================================================
-       STREAMING CHAT
-
-       IMPORTANT:
-       This function performs the ONLY request.
-
-       It receives:
-       route
-       content
-       sources
-       done
-       error
-
-       from /chat/stream.
-       ================================================= */
-
-    async function streamChat(
-        query
-    ) {
-
-        removeHero();
-
-
-        /* =================================================
-           ROUTER UI
-           ================================================= */
-
-        const routerUI =
-            createRouterPanel();
-
-
-        /* =================================================
-           CREATE RESPONSE CARD
-           ================================================= */
-
-        let responseMessage = null;
-
-        let card = null;
-
-        let body = null;
-
-        let streamingText = null;
-
-
-        let route =
-            "";
-
-
-        let fullResponse =
-            "";
-
-
-        let sources =
-            [];
-
-
-        let routeResolved =
-            false;
-
-
-        let responseCardCreated =
-            false;
-
-
-        /* =================================================
-           FETCH STREAM
-           ================================================= */
-
-        const response =
-            await fetch(
-                STREAM_CHAT_URL,
-                {
-                    method: "POST",
-
-                    headers: await getRequestHeaders({
-                        "Content-Type": "application/json"
-                    }),
-
-                    body: JSON.stringify({
-                        query: query,
-                        conversation_id:
-                            currentConversationId,
-                        document_id:
-                            selectedDocumentId,
-                        image_path:
-                            selectedImagePath
-                    })
-                }
-            );
-
-
-        if (!response.ok) {
-
-            clearInterval(
-                routerUI.scanningInterval
-            );
-
-            routerUI.wrap.remove();
-
-            throw new Error(
-                `HTTP error: ${response.status}`
-            );
-        }
-
-
-        if (!response.body) {
-
-            clearInterval(
-                routerUI.scanningInterval
-            );
-
-            routerUI.wrap.remove();
-
-            throw new Error(
-                "Streaming is not supported by this browser."
-            );
-        }
-
-
-        const reader =
-            response.body.getReader();
-
-
-        const decoder =
-            new TextDecoder();
-
-
-        let buffer =
-            "";
-
-
-        /* =================================================
-           CREATE RESPONSE CARD
-           ================================================= */
-
-        function createStreamingMessage(
-            selectedRoute
-        ) {
-
-            if (responseCardCreated) {
-                return;
-            }
-
-
-            responseCardCreated =
-                true;
-
-
-            const {
-                content
-            } = createMessage(
-                "bot"
-            );
-
-
-            responseMessage =
-                content;
-
-
-            const safeRoute =
-                ROUTES.includes(
-                    selectedRoute
-                )
-                    ? selectedRoute
-                    : "";
-
-
-            card =
-                document.createElement(
-                    "div"
-                );
-
-
-            card.className =
-                "answer-card" +
-                (
-                    safeRoute
-                        ? ` route-${safeRoute}`
-                        : ""
-                );
-
-
-            /* =================================================
-               HEADER
-               ================================================= */
-
-            const head =
-                document.createElement(
-                    "div"
-                );
-
-
-            head.className =
-                "answer-head";
-
-
-            head.innerHTML =
-                `<strong>AI Assistant</strong>` +
-
-                (
-                    safeRoute
-                        ? `<span class="route-badge route-${safeRoute}">${safeRoute}</span>`
-                        : ""
-                ) +
-
-                `<span class="message-time">${timeNow()}</span>`;
-
-
-            /* =================================================
-               BODY
-               ================================================= */
-
-            body =
-                document.createElement(
-                    "div"
-                );
-
-
-            body.className =
-                "answer-body";
-
-
-            streamingText =
-                document.createElement(
-                    "div"
-                );
-
-
-            streamingText.className =
-                "streaming-text";
-
-
-            streamingText.textContent =
-                "Generating response...";
-
-
-            body.appendChild(
-                streamingText
-            );
-
-
-            card.appendChild(
-                head
-            );
-
-
-            card.appendChild(
-                body
-            );
-
-
-            responseMessage.appendChild(
-                card
-            );
-
-
-            scrollToBottom();
-        }
-
-
-        /* =================================================
-           READ SSE STREAM
-           ================================================= */
-
-        try {
-
-            while (true) {
-
-                const {
-                    value,
-                    done
-                } =
-                    await reader.read();
-
-
-                if (done) {
-                    break;
-                }
-
-
-                buffer +=
-                    decoder.decode(
-                        value,
-                        {
-                            stream: true
-                        }
-                    );
-
-
-                const events =
-                    buffer.split(
-                        "\n\n"
-                    );
-
-
-                buffer =
-                    events.pop();
-
-
-                for (
-                    const event
-                    of events
-                ) {
-
-                    if (
-                        !event.startsWith(
-                            "data:"
-                        )
-                    ) {
-                        continue;
-                    }
-
-
-                    const jsonText =
-                        event
-                            .replace(
-                                /^data:\s*/,
-                                ""
-                            )
-                            .trim();
-
-
-                    if (!jsonText) {
-                        continue;
-                    }
-
-
-                    let data;
-
-
-                    try {
-
-                        data =
-                            JSON.parse(
-                                jsonText
-                            );
-
-                    } catch (error) {
-
-                        console.error(
-                            "Invalid stream data:",
-                            jsonText
-                        );
-
-                        continue;
-                    }
-
-
-                    /* =========================================
-                       ROUTE EVENT
-                       ========================================= */
-
-                    if (
-                        data.type ===
-                        "route"
-                    ) {
-
-                        route =
-                            String(
-                                data.route ||
-                                ""
-                            ).toUpperCase();
-
-
-                        console.log(
-                            "Route:",
-                            route
-                        );
-
-
-                        if (
-                            !routeResolved
-                        ) {
-
-                            routeResolved =
-                                true;
-
-
-                            await resolveRouterAnimation(
-                                routerUI,
-                                route
-                            );
-
-
-                            createStreamingMessage(
-                                route
-                            );
-                        }
-
-
-                        continue;
-                    }
-
-
-                    /* =========================================
-                       CONTENT EVENT
-                       ========================================= */
-
-                    if (
-                        data.type ===
-                        "content"
-                    ) {
-
-                        if (
-                            !responseCardCreated
-                        ) {
-
-                            createStreamingMessage(
-                                route
-                            );
-                        }
-
-
-                        fullResponse +=
-                            data.content;
-
-
-                        streamingText.innerHTML =
-                            renderMarkdown(
-                                fullResponse
-                            );
-
-
-                        scrollToBottom();
-
-                        continue;
-                    }
-
-
-                    /* =========================================
-                       SOURCES EVENT
-                       ========================================= */
-
-                    if (
-                        data.type ===
-                        "sources"
-                    ) {
-
-                        sources =
-                            data.sources ||
-                            [];
-
-
-                        if (
-                            sources.length > 0 &&
-                            card
-                        ) {
-
-                            const oldSources =
-                                card.querySelector(
-                                    ".sources-box"
-                                );
-
-
-                            if (oldSources) {
-                                oldSources.remove();
-                            }
-
-
-                            const sourcesBox =
-                                document.createElement(
-                                    "div"
-                                );
-
-
-                            sourcesBox.className =
-                                "sources-box";
-
-
-                            const sourcesTitle =
-                                document.createElement(
-                                    "div"
-                                );
-
-
-                            sourcesTitle.className =
-                                "sources-title";
-
-
-                            sourcesTitle.textContent =
-                                "Sources";
-
-
-                            sourcesBox.appendChild(
-                                sourcesTitle
-                            );
-
-
-                            sources.forEach(
-                                (source) => {
-
-                                    if (
-                                        !source.url
-                                    ) {
-                                        return;
-                                    }
-
-
-                                    const sourceLink =
-                                        document.createElement(
-                                            "a"
-                                        );
-
-
-                                    sourceLink.href =
-                                        source.url;
-
-
-                                    sourceLink.target =
-                                        "_blank";
-
-
-                                    sourceLink.rel =
-                                        "noopener noreferrer";
-
-
-                                    sourceLink.className =
-                                        "source-link";
-
-
-                                    sourceLink.textContent =
-                                        source.title ||
-                                        source.url;
-
-
-                                    sourcesBox.appendChild(
-                                        sourceLink
-                                    );
-                                }
-                            );
-
-
-                            card.appendChild(
-                                sourcesBox
-                            );
-                        }
-
-
-                        scrollToBottom();
-
-                        continue;
-                    }
-
-
-                    /* =========================================
-                       ERROR EVENT
-                       ========================================= */
-
-                    if (
-                        data.type ===
-                        "error"
-                    ) {
-
-                        throw new Error(
-                            data.content ||
-                            "Streaming error"
-                        );
-                    }
-
-
-                    /* =========================================
-                       DONE EVENT
-                       ========================================= */
-
-                    if (
-                        data.type ===
-                        "done"
-                    ) {
-
-                        console.log(
-                            "Streaming completed"
-                        );
-
-                        setTimeout(() => {
-                            refreshConversationList();
-                        }, 150);
-                    }
-                }
-            }
-
-        } catch (error) {
-
-            clearInterval(
-                routerUI.scanningInterval
-            );
-
-
-            if (
-                routerUI.wrap &&
-                routerUI.wrap.parentNode
-            ) {
-
-                routerUI.wrap.remove();
-            }
-
-
-            throw error;
-        }
-
-
-        /* =================================================
-           FINAL RESPONSE CARD
-           ================================================= */
-
-        if (
-            !responseCardCreated
-        ) {
-
-            createStreamingMessage(
-                route
-            );
-        }
-
-
-        /* =================================================
-           FINAL FOOTER
-           ================================================= */
-
-        const foot =
-            document.createElement(
-                "div"
-            );
-
-
-        foot.className =
-            "answer-foot";
-
-
-        const trace =
-            document.createElement(
-                "div"
-            );
-
-
-        trace.className =
-            "trace";
-
-
-        const safeRoute =
-            ROUTES.includes(route)
-                ? route
-                : "";
-
-
-        trace.innerHTML =
-            safeRoute
-
-                ? `<span class="step">User</span>` +
-                  `<i>→</i>` +
-                  `<span class="step">Router</span>` +
-                  `<i>→</i>` +
-                  `<span class="route-badge route-${safeRoute}">${safeRoute}</span>` +
-                  `<i>→</i>` +
-                  `<span class="step">Groq LLM</span>`
-
-                : "";
-
-
-        const copy =
-            document.createElement(
-                "button"
-            );
-
-
-        copy.className =
-            "copy-btn";
-
-
-        copy.type =
-            "button";
-
-
-        copy.textContent =
-            "Copy";
-
-
-        copy.addEventListener(
-            "click",
-            async () => {
-
-                try {
-
-                    await navigator
-                        .clipboard
-                        .writeText(
-                            fullResponse
-                        );
-
-
-                    copy.textContent =
-                        "Copied ✓";
-
-                } catch (e) {
-
-                    copy.textContent =
-                        "Failed";
-                }
-
-
-                setTimeout(
-                    () => {
-
-                        copy.textContent =
-                            "Copy";
-
-                    },
-                    1500
-                );
-            }
-        );
-
-
-        foot.appendChild(
-            trace
-        );
-
-
-        foot.appendChild(
-            copy
-        );
-
-
-        card.appendChild(
-            foot
-        );
-
-
-        scrollToBottom();
-
-
-        return {
-            response:
-                fullResponse,
-
-            sources:
-                sources,
-
-            route:
-                safeRoute
-        };
-    }
-
-
-    /* =================================================
-       SEND MESSAGE
-
-       IMPORTANT:
-       Only /chat/stream is called.
-
-       The route is received from the SAME
-       streaming request.
-
-       There is NO /chat request here.
-       ================================================= */
-
-    async function sendMessage() {
-
-        const query =
-            userInput.value.trim();
-
-
-        if (
-            !query ||
-            sendButton.disabled
-        ) {
-            return;
-        }
-
-        if (!currentConversationId) {
-            const conversation =
-                await createNewConversation();
-
-            if (!conversation) {
-                return;
-            }
-        }
-
-
-        addUserMessage(
-            query
-        );
-
-
-        userInput.value = "";
-
-        userInput.style.height =
-            "auto";
-
-
-        sendButton.disabled =
-            true;
-
-
-        try {
-
-            /* =============================================
-               SINGLE REQUEST
-
-               /chat/stream performs:
-
-               1. Router
-               2. Selected tool
-               3. Groq LLM
-               4. Streaming
-               5. Sources
-               ============================================= */
-
-            await streamChat(
-                query
-            );
-
-        } catch (error) {
-
-            console.error(
-                "Chat error:",
-                error
-            );
-
-
-            addBotMessage(
-                "Unable to connect to the AI backend.",
-                "",
-                true
-            );
-
-        } finally {
-
-            sendButton.disabled =
-                false;
-
-
-            userInput.focus();
-        }
-    }
-
-
-    /* =================================================
-       INPUT EVENTS
-       ================================================= */
-
-    sendButton.addEventListener(
-        "click",
-        sendMessage
-    );
-
-
-    userInput.addEventListener(
-        "keydown",
-        (e) => {
-
-            if (
-                e.key === "Enter" &&
-                !e.shiftKey
-            ) {
-
-                e.preventDefault();
-
-                sendMessage();
-            }
-        }
-    );
-
-
-    userInput.addEventListener(
-        "input",
-        () => {
-
-            userInput.style.height =
-                "auto";
-
-
-            userInput.style.height =
-                Math.min(
-                    userInput.scrollHeight,
-                    160
-                ) + "px";
-        }
-    );
-
-
-    /* =================================================
-       SUGGESTION CHIPS
-       ================================================= */
-
-    chatInner.addEventListener(
-        "click",
-        (e) => {
-
-            const chip =
-                e.target.closest(
-                    ".chip"
-                );
-
-
-            if (!chip) {
-                return;
-            }
-
-
-            userInput.value =
-                chip.dataset.prompt;
-
-
-            sendMessage();
-        }
-    );
-
-
-    /* =================================================
-       SIDEBAR
-       ================================================= */
-
-    const isMobile =
-        () =>
-            window.matchMedia(
-                "(max-width: 800px)"
-            ).matches;
-
-
-    menuButton.addEventListener(
-        "click",
-        () => {
-
-            if (isMobile()) {
-
-                sidebar.classList.toggle(
-                    "open"
-                );
-
-
-                overlay.classList.toggle(
-                    "show"
-                );
-
-            } else {
-
-                sidebar.classList.toggle(
-                    "collapsed"
-                );
-            }
-        }
-    );
-
-
-    overlay.addEventListener(
-        "click",
-        () => {
-
-            sidebar.classList.remove(
-                "open"
-            );
-
-
-            overlay.classList.remove(
-                "show"
-            );
-        }
-    );
-
-
-    /* =================================================
-       NEW CHAT
-       ================================================= */
-
-    newChatButton.addEventListener(
-        "click",
-        async () => {
-
-            const conversation =
-                await createNewConversation();
-
-            if (!conversation) {
-                return;
-            }
-
-            sidebar.classList.remove("open");
-            overlay.classList.remove("show");
-            userInput.focus();
-        }
-    );
-
-
-    /* =================================================
-       CHAT LIST
-       ================================================= */
-
-    chatList.addEventListener(
-        "click",
-        async (e) => {
-
-            const item =
-                e.target.closest(
-                    ".chat-item"
-                );
-
-            if (!item) {
-                return;
-            }
-
-            const conversationId =
-                item.dataset.conversationId;
-
-            if (!conversationId) {
-                return;
-            }
-
-            await openConversation(
-                conversationId
-            );
-
-            sidebar.classList.remove("open");
-            overlay.classList.remove("show");
-        }
-    );
-
-
-    userInput.focus();
-}
-
-/* =====================================================
-   FILE UPLOAD
-   ===================================================== */
-function clearSelectedFile() {
-    pendingFileAfterLogin = null;
-    pendingFileNeedsLogin = false;
-    selectedDocumentId = null;
-    selectedImagePath = null;
-    selectedFileName = "";
-    selectedFileType = "";
-    selectedFileUploading = false;
-    const input = document.getElementById("fileInput");
-    const preview = document.getElementById("filePreview");
-    const button = document.getElementById("attachFileButton");
-    if (input) input.value = "";
-    if (button) button.disabled = false;
-    if (preview) {
-        preview.className = "file-preview";
-        preview.innerHTML = "";
-    }
-}
-
-function renderFilePreview(file, statusText = "Uploading...") {
-    const preview = document.getElementById("filePreview");
-    if (!preview) return;
-    const isPDF = file?.name?.toLowerCase().endsWith(".pdf");
-    const icon = isPDF ? "📄" : "🖼️";
-    preview.className = "file-preview active";
-    preview.innerHTML = `
-        <div class="file-preview-left">
-            <span class="file-preview-icon">${icon}</span>
-            <div>
-                <div class="file-preview-name">${escapeHTML(file?.name || "File")}</div>
-                <div id="filePreviewStatus" class="file-preview-status">${escapeHTML(statusText)}</div>
-            </div>
-        </div>
-        <button id="removeSelectedFile" class="file-remove-button" type="button" title="Remove file" aria-label="Remove file">✕</button>
-    `;
-    document.getElementById("removeSelectedFile")?.addEventListener("click", clearSelectedFile);
-}
-
-function updateFilePreviewStatus(text, state = "") {
-    const status = document.getElementById("filePreviewStatus");
-    if (!status) return;
-    status.textContent = text;
-    status.className = "file-preview-status" + (state ? ` ${state}` : "");
-}
-
-async function uploadSelectedFile(file) {
-    if (!file) return;
-
-    const isPDF = file.name.toLowerCase().endsWith(".pdf");
-
-    // Defensive check: the upload button already blocks logged-out users,
-    // but keep the backend-aligned guard here as well.
-    if (!currentUser) {
-        document.getElementById("authLoginButton")?.click();
-        return;
-    }
-
-    const attachButton = document.getElementById("attachFileButton");
-    pendingFileAfterLogin = null;
-    pendingFileNeedsLogin = false;
-    selectedDocumentId = null;
-    selectedImagePath = null;
-    selectedFileName = file.name;
-    selectedFileType = file.type || "";
-    selectedFileUploading = true;
-    if (attachButton) attachButton.disabled = true;
-    renderFilePreview(file, "Uploading...");
-    const formData = new FormData();
-    formData.append("file", file);
-    const endpoint = isPDF ? PDF_UPLOAD_URL : IMAGE_UPLOAD_URL;
-    try {
-        const requestHeaders = isPDF
-            ? await getAuthHeaders()
-            : await getRequestHeaders();
-
-        if (isPDF && !requestHeaders.Authorization) {
-            throw new Error("Login is required to upload a PDF.");
-        }
-
-        const response = await fetch(endpoint, {
-            method: "POST",
-            headers: requestHeaders,
-            body: formData
-        });
-        let data = null;
-        try { data = await response.json(); } catch (_) { data = null; }
-        if (!response.ok) {
-            throw new Error(data?.detail || `Upload failed. HTTP ${response.status}`);
-        }
-        if (isPDF) {
-            if (!data?.document_id) throw new Error("PDF uploaded but document_id was not returned.");
-            selectedDocumentId = data.document_id;
-            selectedImagePath = null;
-            updateFilePreviewStatus("PDF ready for RAG", "ready");
-        } else {
-            if (!data?.image_path) throw new Error("Image uploaded but image_path was not returned.");
-            selectedImagePath = data.image_path;
-            selectedDocumentId = null;
-            updateFilePreviewStatus("Image ready for analysis", "ready");
-        }
-        selectedFileUploading = false;
-        if (attachButton) attachButton.disabled = false;
-    } catch (error) {
-        console.error("File upload error:", error);
-        selectedDocumentId = null;
-        selectedImagePath = null;
-        selectedFileUploading = false;
-        updateFilePreviewStatus(error?.message || "File upload failed.", "error");
-        if (attachButton) attachButton.disabled = false;
-    }
-}
-
-function initFileUpload() {
-    const attachButton = document.getElementById("attachFileButton");
-    const fileInput = document.getElementById("fileInput");
-    if (!attachButton || !fileInput || attachButton.dataset.fileUploadBound) return;
-    attachButton.dataset.fileUploadBound = "true";
-    attachButton.addEventListener("click", () => {
-        if (selectedFileUploading) {
-            return;
-        }
-
-        // Upload always starts with authentication.
-        // The user must login before the file picker is opened.
-        if (!currentUser) {
-            document.getElementById("authLoginButton")?.click();
-            return;
-        }
-
-        fileInput.click();
     });
-    fileInput.addEventListener("change", async (event) => {
-        const file = event.target.files?.[0];
-        if (!file) return;
-        const isPDF = file.name.toLowerCase().endsWith(".pdf");
-        const maxSize = isPDF ? 25 * 1024 * 1024 : 10 * 1024 * 1024;
-        if (file.size > maxSize) {
-            alert(isPDF ? "Maximum PDF size is 25 MB." : "Maximum image size is 10 MB.");
-            fileInput.value = "";
-            return;
-        }
-        if (!isPDF && !["image/jpeg", "image/png", "image/webp", "image/bmp"].includes(file.type)) {
-            alert("Please select a PDF or supported image.");
-            fileInput.value = "";
-            return;
-        }
-        await uploadSelectedFile(file);
+    input.addEventListener("input", autoGrow);
+    input.addEventListener("focus", () => {
+        if (!Auth.user && Auth.resolved) AuthModal.open("login", { message: "Please log in to start chatting." });
     });
-}
 
-document.addEventListener("DOMContentLoaded", initFileUpload);
+    $("voiceButton").addEventListener("click", () => {
+        if ($("voiceButton").dataset.state === "listening") voice.stop();
+        else voice.start();
+    });
+    voice.setState("idle");
+
+    $("newChatButton").addEventListener("click", newChat);
+    $("chatSearch").addEventListener("input", debounce(() => sidebar.render(), 150));
+
+    $("chatList").addEventListener("click", (event) => {
+        const remove = event.target.closest(".chat-delete");
+        const item = event.target.closest(".chat-item[data-id]");
+        if (!item) return;
+        if (remove) deleteConversation(item.dataset.id);
+        else openConversation(item.dataset.id);
+    });
+    $("chatList").addEventListener("keydown", (event) => {
+        const item = event.target.closest(".chat-item[data-id]");
+        if (item && (event.key === "Enter" || event.key === " ")) {
+            event.preventDefault();
+            openConversation(item.dataset.id);
+        }
+    });
+
+    const sidebarEl = $("sidebar");
+    const overlay = $("overlay");
+    const menu = $("menuButton");
+    menu.addEventListener("click", () => {
+        if (window.matchMedia("(max-width: 860px)").matches) {
+            const open = !sidebarEl.classList.contains("open");
+            sidebarEl.classList.toggle("open", open);
+            overlay.hidden = !open;
+            menu.setAttribute("aria-expanded", String(open));
+        } else {
+            const collapsed = sidebarEl.classList.toggle("collapsed");
+            menu.setAttribute("aria-expanded", String(!collapsed));
+        }
+    });
+    overlay.addEventListener("click", () => {
+        sidebarEl.classList.remove("open");
+        overlay.hidden = true;
+    });
+
+    initUpload();
+
+    Auth.onChange(applyAuthState);
+});

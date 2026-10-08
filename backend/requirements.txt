@@ -1,32 +1,34 @@
-fastapi
-uvicorn
-pydantic
-python-dotenv
+# Versions pinned to the environment the app was verified with (2026-10-08).
 
-langchain
-langchain-core
-langchain-community
-langchain-groq
-langgraph
+# Web framework
+fastapi==0.141.1
+uvicorn==0.54.0
+pydantic==2.13.5
+python-dotenv==1.2.3
+python-multipart==0.0.32
 
-groq
-tavily-python
+# LLM orchestration
+langgraph==1.2.12
+langchain-core==1.6.5
+langchain-groq==1.1.3
+groq==0.37.1
 
-arxiv
-wikipedia
+# Tools
+tavily-python==0.8.4
+arxiv==4.0.1
+requests==2.34.2
 
+# Supabase (Postgres + pgvector + Auth)
+supabase==2.32.0
 
-# PostgreSQL / Supabase
-supabase
-psycopg[binary]
+# PDF processing / OCR / images
+pypdf==6.19.0
+pymupdf==1.28.2
+Pillow==12.3.0
 
-# PDF processing
-pypdf
+# Embeddings (production model: paraphrase-multilingual-MiniLM-L12-v2)
+fastembed==0.8.1
 
-# Embeddings
-fastembed
-
-python-multipart
-pymupdf
-requests
-Pillow
+# Removed (not imported anywhere; still installed in the local venv):
+#   langchain, langchain-community, wikipedia (the tool calls the
+#   Wikipedia API with requests), psycopg[binary]
