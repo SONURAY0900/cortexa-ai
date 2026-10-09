@@ -101,25 +101,49 @@ const ICONS = {
    THEME
    ===================================================== */
 
+/* Per-device preferences (theme, voice). Stored locally because they
+   describe this browser, not the account. */
+const Prefs = {
+    get(key, fallback = null) {
+        try { return localStorage.getItem(key) ?? fallback; } catch (_) { return fallback; }
+    },
+    set(key, value) {
+        try { localStorage.setItem(key, value); return true; } catch (_) { return false; }
+    },
+};
+
 const Theme = {
-    get() {
-        try { return localStorage.getItem("theme"); } catch (_) { return null; }
+    media: window.matchMedia("(prefers-color-scheme: dark)"),
+
+    /** "light" | "dark" | "system" (what the user chose). */
+    preference() {
+        const value = Prefs.get("theme");
+        return value === "light" || value === "dark" ? value : "system";
     },
-    apply(theme) {
-        document.documentElement.setAttribute("data-theme", theme);
-        try { localStorage.setItem("theme", theme); } catch (_) { /* private mode */ }
+
+    resolved(preference = Theme.preference()) {
+        return preference === "system" ? (Theme.media.matches ? "dark" : "light") : preference;
     },
+
+    render() {
+        document.documentElement.setAttribute("data-theme", Theme.resolved());
+    },
+
+    set(preference) {
+        Prefs.set("theme", preference);
+        Theme.render();
+    },
+
     init() {
-        const preferred = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-        Theme.apply(Theme.get() || preferred);
+        Theme.render();
+        Theme.media.addEventListener?.("change", () => { if (Theme.preference() === "system") Theme.render(); });
         document.getElementById("themeToggle")?.addEventListener("click", () => {
-            const current = document.documentElement.getAttribute("data-theme");
-            Theme.apply(current === "dark" ? "light" : "dark");
+            Theme.set(Theme.resolved() === "dark" ? "light" : "dark");
         });
     },
 };
 
-Theme.apply(Theme.get() || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
+Theme.render();
 
 
 /* =====================================================
@@ -220,10 +244,10 @@ const Toast = {
    ===================================================== */
 
 const Modal = {
-    open(content, { onClose, labelledBy, wide = false } = {}) {
+    open(content, { onClose, labelledBy, wide = false, className = "" } = {}) {
         const backdrop = el("div", { class: "modal-backdrop" });
         const dialog = el("div", {
-            class: `modal${wide ? " modal-wide" : ""}`,
+            class: `modal${wide ? " modal-wide" : ""}${className ? " " + className : ""}`,
             role: "dialog",
             "aria-modal": "true",
             "aria-labelledby": labelledBy || null,
@@ -640,10 +664,28 @@ const AuthModal = {
    ===================================================== */
 
 const UserMenu = {
+    listeners: null,
+
+    avatar(user, size = "") {
+        const meta = user?.user_metadata || {};
+        const name = meta.full_name || meta.name || user?.email || "?";
+        const url = [meta.avatar_url, meta.picture].find((u) => typeof u === "string" && u.startsWith("https://"));
+        const circle = el("span", { class: `avatar-circle ${size}`.trim(), "aria-hidden": "true" });
+        if (url) {
+            const img = el("img", { src: url, alt: "", referrerpolicy: "no-referrer" });
+            img.addEventListener("error", () => { img.remove(); circle.textContent = name.slice(0, 1).toUpperCase(); });
+            circle.append(img);
+        } else {
+            circle.textContent = name.slice(0, 1).toUpperCase();
+        }
+        return circle;
+    },
+
     render() {
         const slot = document.getElementById("userSlot");
         if (!slot) return;
         slot.replaceChildren();
+        UserMenu.listeners?.abort();
 
         if (!Auth.user) {
             slot.append(el("button", {
@@ -655,16 +697,23 @@ const UserMenu = {
             return;
         }
 
+        const meta = Auth.user.user_metadata || {};
         const email = Auth.user.email || "Account";
-        const initials = email.slice(0, 1).toUpperCase();
+        const name = meta.full_name || meta.name || "";
+        const icon = (path) => `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+
         const menu = el("div", { class: "menu", role: "menu", hidden: true }, [
             el("div", { class: "menu-header" }, [
+                name ? el("div", { class: "menu-name", text: name }) : null,
                 el("div", { class: "menu-email", text: email }),
-                Auth.isAdmin ? el("span", { class: "pill pill-accent", text: "Admin" }) : null,
             ]),
-            Auth.isAdmin ? el("a", { class: "menu-item", href: "/admin", role: "menuitem" }, [
-                el("span", { html: ICONS.shield }), "Admin panel",
-            ]) : null,
+            el("a", { class: "menu-item", href: "/profile", role: "menuitem" }, [
+                el("span", { html: icon('<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>') }), "Profile",
+            ]),
+            el("a", { class: "menu-item", href: "/settings", role: "menuitem" }, [
+                el("span", { html: icon('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>') }), "Settings",
+            ]),
+            el("div", { class: "menu-sep", role: "separator" }),
             el("button", { class: "menu-item danger", type: "button", role: "menuitem", onclick: () => Auth.logout() }, [
                 el("span", { html: ICONS.logout }), "Log out",
             ]),
@@ -674,21 +723,28 @@ const UserMenu = {
             type: "button",
             "aria-haspopup": "menu",
             "aria-expanded": "false",
+            "aria-label": "Account menu",
             title: email,
-        }, [el("span", { class: "avatar-circle", text: initials })]);
+        }, [UserMenu.avatar(Auth.user)]);
 
         const toggle = (open) => {
             menu.hidden = !open;
             trigger.setAttribute("aria-expanded", String(open));
+            if (open) menu.querySelector(".menu-item")?.focus();
         };
         trigger.addEventListener("click", (event) => {
             event.stopPropagation();
             toggle(menu.hidden);
         });
+
+        const listeners = new AbortController();
+        UserMenu.listeners = listeners;
         document.addEventListener("click", (event) => {
             if (!slot.contains(event.target)) toggle(false);
-        });
-        document.addEventListener("keydown", (event) => { if (event.key === "Escape") toggle(false); });
+        }, { signal: listeners.signal });
+        document.addEventListener("keydown", (event) => {
+            if (event.key === "Escape" && !menu.hidden) { toggle(false); trigger.focus(); }
+        }, { signal: listeners.signal });
 
         slot.append(el("div", { class: "user-menu" }, [trigger, menu]));
     },

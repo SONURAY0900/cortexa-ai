@@ -43,7 +43,7 @@ ADMIN_EMAILS = [email.lower() for email in _csv("ADMIN_EMAIL")]
 ALLOWED_ORIGINS = _csv("ALLOWED_ORIGINS")
 
 APP_ENV = os.getenv("APP_ENV", "development")
-APP_VERSION = os.getenv("APP_VERSION", "1.1.0")
+APP_VERSION = os.getenv("APP_VERSION", "1.2.0")
 
 MAX_PDF_MB = int(os.getenv("MAX_PDF_MB", "25"))
 MAX_IMAGE_MB = int(os.getenv("MAX_IMAGE_MB", "10"))

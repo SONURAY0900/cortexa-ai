@@ -213,6 +213,7 @@ button, input, textarea, select { font: inherit; color: inherit; }
 .user-slot { display: flex; align-items: center; min-width: 36px; justify-content: flex-end; }
 .user-menu { position: relative; }
 .avatar-btn { border: 0; background: none; cursor: pointer; padding: 0; border-radius: 50%; }
+.avatar-circle img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; display: block; }
 .avatar-circle {
     width: 36px; height: 36px; border-radius: 50%;
     display: inline-flex; align-items: center; justify-content: center;
@@ -233,7 +234,9 @@ button, input, textarea, select { font: inherit; color: inherit; }
     transform-origin: top right;
 }
 .menu-header { padding: 10px 10px 10px; border-bottom: 1px solid var(--border); margin-bottom: 4px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
-.menu-email { font-size: 13px; font-weight: 600; word-break: break-all; }
+.menu-name { font-size: 13.5px; font-weight: 700; }
+.menu-email { font-size: 12.5px; color: var(--muted); word-break: break-all; }
+.menu-sep { height: 1px; background: var(--border); margin: 4px 6px; }
 .menu-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 10px; border: 0; background: none; border-radius: 9px; font-size: 13.5px; cursor: pointer; text-align: left; color: var(--text-2); }
 .menu-item:hover { background: var(--hover); color: var(--text); }
 .menu-item.danger:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); }
@@ -336,7 +339,6 @@ button, input, textarea, select { font: inherit; color: inherit; }
 .message-text { padding: 12px 16px; border-radius: 16px; line-height: 1.6; overflow-wrap: anywhere; }
 .user-message .message-text { background: var(--grad); color: #fff; white-space: pre-wrap; border-bottom-right-radius: 5px; box-shadow: 0 8px 22px rgba(99, 102, 241, .26); }
 .message-meta { font-size: 11px; color: var(--muted); margin-top: 5px; }
-.attachment-tag { font-size: 12px; color: var(--text-2); background: var(--surface-solid); border: 1px solid var(--border); padding: 4px 10px; border-radius: 999px; margin-bottom: 6px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* answer card */
 .answer-card {
@@ -425,6 +427,8 @@ a.source-card:hover { border-color: var(--accent); transform: translateY(-2px); 
 .thinking-card.resolved .thinking-bar { background: var(--success); animation: none; opacity: .7; }
 .thinking-row { display: flex; align-items: center; gap: 10px; font-size: 13.5px; color: var(--text-2); margin-bottom: 12px; }
 .thinking-label { animation: fadeIn .3s; }
+.thinking-label.swap { animation: statusSwap .3s var(--ease); }
+@keyframes statusSwap { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 .typing { display: inline-flex; gap: 4px; }
 .typing i { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: bounce 1.2s infinite ease-in-out; }
 .typing i:nth-child(2) { animation-delay: .15s; }
@@ -492,37 +496,87 @@ textarea#userInput.dimmed { opacity: .5; }
 
 .hint { text-align: center; font-size: 11.5px; color: var(--muted); margin-top: 8px; }
 
-/* attachment */
-.attachment {
-    max-width: 860px; margin: 0 auto 8px;
-    display: flex; align-items: center; gap: 12px;
-    padding: 10px 12px;
+/* composer attachments */
+.attachment-tray, .context-bar { max-width: 860px; margin: 0 auto 8px; display: flex; flex-wrap: wrap; gap: 8px; }
+.attach-card {
+    position: relative;
+    display: flex; align-items: center; gap: 10px;
+    width: 236px; max-width: 100%;
+    padding: 8px 36px 8px 8px;
     background: var(--surface-solid);
-    border: 1px solid var(--border); border-radius: var(--radius);
-    box-shadow: var(--shadow);
-    animation: fadeUp .3s var(--ease);
+    border: 1px solid var(--border); border-radius: 14px;
+    box-shadow: var(--shadow-sm);
+    overflow: hidden;
+    animation: attachIn .28s var(--ease) both;
+    transition: border-color .2s, opacity .18s, transform .18s;
 }
-.attachment.ready { border-color: color-mix(in srgb, var(--success) 40%, var(--border)); }
-.attachment.error { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
-.attachment-icon { font-size: 22px; flex-shrink: 0; }
-.attachment-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
-.attachment-name { display: flex; gap: 8px; align-items: baseline; font-size: 13.5px; font-weight: 600; min-width: 0; }
-.attachment-name .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.attachment-name .size { color: var(--muted); font-weight: 400; font-size: 12px; flex-shrink: 0; }
-.attachment-status { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
-.attachment-status.ready { color: var(--success); }
-.attachment-status.error { color: var(--danger); }
-.attachment-remove { border: 1px solid var(--border); background: transparent; color: var(--muted); width: 30px; height: 30px; border-radius: 9px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
-.attachment-remove:hover { color: var(--danger); border-color: var(--danger); }
-.progress-track { flex: 0 0 120px; height: 5px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
-.progress-fill { display: block; height: 100%; background: var(--grad); border-radius: inherit; transition: width .2s; }
-.stepper { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); }
-.stepper .step { display: inline-flex; align-items: center; gap: 6px; }
-.stepper .step i { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--border-strong); }
-.stepper .step.done { color: var(--text-2); }
-.stepper .step.done i { background: var(--success); border-color: var(--success); }
-.stepper .step.active { color: var(--accent); font-weight: 600; }
-.stepper .step.active i { border-color: var(--accent); background: var(--accent); animation: ping-accent 1.4s infinite; }
+.attach-card.leaving { opacity: 0; transform: scale(.94); }
+.attach-card.is-error { border-color: color-mix(in srgb, var(--danger) 50%, var(--border)); }
+.attach-card.is-ready { border-color: color-mix(in srgb, var(--success) 35%, var(--border)); }
+.attach-thumb { width: 44px; height: 44px; flex-shrink: 0; border-radius: 10px; overflow: hidden; background: var(--surface-2); }
+.attach-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.attach-card.is-uploading .attach-thumb img { opacity: .55; }
+.file-badge { width: 44px; height: 44px; flex-shrink: 0; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; }
+.file-badge.pdf { background: color-mix(in srgb, var(--pdf) 14%, transparent); color: var(--pdf); }
+.file-badge.small { width: 22px; height: 22px; border-radius: 6px; }
+.file-badge.small svg { width: 13px; height: 13px; }
+.file-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; text-align: left; }
+.file-name { font-size: 13px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.file-kind { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); }
+.file-kind.error { color: var(--danger); white-space: normal; line-height: 1.3; }
+.attach-remove {
+    position: absolute; top: 6px; right: 6px;
+    width: 24px; height: 24px; border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid var(--border); background: var(--surface-solid); color: var(--muted);
+    cursor: pointer; transition: color .15s, border-color .15s, transform .15s;
+}
+.attach-remove svg { width: 13px; height: 13px; }
+.attach-remove:hover { color: var(--danger); border-color: var(--danger); transform: scale(1.08); }
+.attach-progress { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: var(--surface-2); }
+.attach-progress span { display: block; height: 100%; background: var(--grad); transition: width .2s; }
+.spinner.tiny { width: 11px; height: 11px; border-width: 2px; display: inline-block; }
+.composer-pending .send-btn, .has-pending .send-btn:not(.is-stop) { opacity: .55; }
+
+.context-bar { align-items: center; font-size: 12px; color: var(--muted); animation: fadeUp .25s var(--ease); }
+.context-label { font-weight: 600; }
+.context-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 240px; padding: 3px 4px 3px 4px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-solid); color: var(--text-2); animation: attachIn .25s var(--ease) both; }
+.context-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.context-remove { border: 0; background: none; color: var(--muted); cursor: pointer; width: 20px; height: 20px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; }
+.context-remove svg { width: 12px; height: 12px; }
+.context-remove:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+
+/* attachments inside sent messages */
+.msg-attachments { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-bottom: 6px; max-width: 100%; }
+.msg-image {
+    width: 168px; height: 168px; max-width: 46vw; max-height: 46vw;
+    padding: 0; border: 1px solid var(--border); border-radius: 14px; overflow: hidden;
+    background: var(--surface-2); cursor: zoom-in;
+    animation: attachIn .3s var(--ease) both;
+    transition: transform .2s var(--ease), box-shadow .2s;
+}
+.msg-image:hover { transform: translateY(-1px); box-shadow: var(--shadow); }
+.msg-image img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.msg-image.is-loading { background: linear-gradient(90deg, var(--surface-2) 25%, color-mix(in srgb, var(--surface-2) 60%, var(--surface-solid)) 50%, var(--surface-2) 75%); background-size: 200% 100%; animation: skeleton 1.3s ease-in-out infinite; }
+.msg-image.is-loading img { opacity: 0; }
+.msg-image.is-missing { cursor: default; display: flex; align-items: center; justify-content: center; font-size: 12px; color: var(--muted); }
+.msg-file {
+    display: flex; align-items: center; gap: 10px;
+    width: 240px; max-width: 100%;
+    padding: 8px 12px 8px 8px;
+    border: 1px solid var(--border); border-radius: 14px;
+    background: var(--surface-solid); cursor: pointer; text-align: left;
+    animation: attachIn .3s var(--ease) both;
+    transition: border-color .2s, transform .2s var(--ease);
+}
+.msg-file:hover:not(.is-static) { border-color: var(--pdf); transform: translateY(-1px); }
+.msg-file.is-static { cursor: default; }
+
+.modal-lightbox { width: min(960px, 100%); padding: 12px; }
+.lightbox img { display: block; max-width: 100%; max-height: 78vh; margin: 0 auto; border-radius: 12px; }
+.lightbox-caption { text-align: center; font-size: 13px; color: var(--muted); margin-top: 8px; word-break: break-word; }
+
+@keyframes attachIn { from { opacity: 0; transform: translateY(6px) scale(.96); } to { opacity: 1; transform: none; } }
 
 .drop-zone { position: absolute; inset: 10px; z-index: 20; border: 2px dashed var(--accent); border-radius: 20px; background: color-mix(in srgb, var(--bg) 82%, transparent); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); display: flex; align-items: center; justify-content: center; animation: fadeIn .15s; pointer-events: none; }
 .drop-zone-inner { display: flex; flex-direction: column; align-items: center; gap: 6px; color: var(--accent); }

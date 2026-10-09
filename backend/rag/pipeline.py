@@ -41,7 +41,8 @@ def ingest_pdf(
     file_path: str,
     filename: str,
     user_id: str | None = None,
-    progress=None
+    progress=None,
+    file_id: str | None = None
 ) -> str:
     """
     Ingest a PDF into the RAG system.
@@ -98,7 +99,8 @@ def ingest_pdf(
         file_path=str(pdf_path),
         file_type="application/pdf",
         file_size=pdf_path.stat().st_size,
-        user_id=user_id
+        user_id=user_id,
+        file_id=file_id
     )
 
     try:

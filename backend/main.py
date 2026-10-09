@@ -2,7 +2,9 @@ import io
 import json
 import queue
 import threading
+from dataclasses import dataclass, field
 from pathlib import Path
+from uuid import UUID
 
 from fastapi import (
     FastAPI,
@@ -29,6 +31,7 @@ from agents.arxiv_agent import arxiv_agent
 from agents.rag_agent import rag_agent
 from agents.speech_agent import speech_to_text_agent
 
+from account.routes import router as account_router
 from admin.routes import router as admin_router
 from auth.supabase_auth import get_current_user, is_admin
 from config.settings import (
@@ -44,7 +47,20 @@ from config.settings import (
 from database.connection import supabase
 from rag.pipeline import ingest_pdf
 from services.activity import log_activity
-from services.image_analysis import analyze_image
+from services.files import (
+    FileStatus,
+    FileType,
+    ImageStepStatus,
+    attachment_reference,
+    completed_documents_for_files,
+    create_file,
+    image_statuses,
+    owned_file_path,
+    owned_files,
+    set_file_status,
+    soft_delete_file,
+)
+from services.image_analysis import combine, run_ocr, run_vision
 from services.storage import (
     IMAGE_UPLOAD_DIR,
     PDF_UPLOAD_DIR,
@@ -83,7 +99,7 @@ if ALLOWED_ORIGINS:
         CORSMiddleware,
         allow_origins=ALLOWED_ORIGINS,
         allow_credentials=False,
-        allow_methods=["GET", "POST", "DELETE"],
+        allow_methods=["GET", "POST", "PATCH", "DELETE"],
         allow_headers=["Authorization", "Content-Type"],
     )
 
@@ -134,10 +150,20 @@ def home():
     return FileResponse(FRONTEND_DIR / "index.html")
 
 
+# Static pages; every API call they make is authorized server-side.
 @app.get("/admin")
 def admin_page():
-    # The page is static; every admin API call is authorized server-side.
     return FileResponse(FRONTEND_DIR / "admin.html")
+
+
+@app.get("/profile")
+def profile_page():
+    return FileResponse(FRONTEND_DIR / "profile.html")
+
+
+@app.get("/settings")
+def settings_page():
+    return FileResponse(FRONTEND_DIR / "settings.html")
 
 
 # ============================================================
@@ -162,6 +188,7 @@ def public_config():
             "pdf_mb": MAX_PDF_MB,
             "image_mb": MAX_IMAGE_MB,
             "audio_mb": MAX_AUDIO_MB,
+            "attachments_per_message": MAX_ATTACHMENTS,
         },
     }
 
@@ -190,16 +217,33 @@ def get_me(user=Depends(get_current_user)):
 # REQUEST MODEL
 # ============================================================
 
+MAX_ATTACHMENTS = 10
+MAX_CONTEXT_FILES = 5
+
+
 class ChatRequest(BaseModel):
     query: str = Field(min_length=1, max_length=8000)
     conversation_id: str | None = None
 
-    # Optional PDF document ID (must belong to the user).
-    document_id: str | None = None
+    # Files attached to this message (files.id values returned by the
+    # upload endpoints; ownership is checked server-side).
+    attachments: list[UUID] = Field(default_factory=list, max_length=MAX_ATTACHMENTS)
 
-    # Optional uploaded image ID returned by /upload/image
-    # (must belong to the user). File paths are never accepted.
+    # PDFs attached earlier in the conversation that the user keeps
+    # using as context for follow-up questions.
+    context_file_ids: list[UUID] = Field(default_factory=list, max_length=MAX_CONTEXT_FILES)
+
+    # Legacy single-attachment fields (still accepted).
+    document_id: str | None = None
     image_id: str | None = None
+
+
+@dataclass
+class AttachmentPlan:
+    """Server-resolved, ownership-checked inputs of one chat request."""
+    references: list[dict] = field(default_factory=list)   # stored in message metadata
+    documents: list[dict] = field(default_factory=list)    # [{"id", "filename"}] for RAG
+    images: list[dict] = field(default_factory=list)       # [{"file_id", "filename", "path"}]
 
 
 # ============================================================
@@ -210,56 +254,24 @@ def _user_id(user) -> str:
     return str(user.id)
 
 
-def _document_owned_by_user(document_id: str, user) -> bool:
+def _document_owned_by_user(document_id: str, user) -> dict | None:
     """
-    Verify that the requested PDF belongs to the authenticated user.
+    Return the requested document if it belongs to the authenticated user.
     """
     try:
         result = (
             supabase
             .table("documents")
-            .select("id")
+            .select("id,filename,file_id")
             .eq("id", document_id)
             .eq("user_id", _user_id(user))
             .limit(1)
             .execute()
         )
-        return bool(result.data)
+        return result.data[0] if result.data else None
     except Exception as e:
         log_agent("DATABASE", f"Document ownership check failed: {e}")
-        return False
-
-
-def _resolve_owned_image(image_id: str, user) -> tuple[str, Path]:
-    """
-    Return (file_id, server path) for an image the user uploaded.
-    Raises 404 for unknown, foreign, deleted or missing files.
-    """
-    try:
-        result = (
-            supabase
-            .table("files")
-            .select("id,storage_path")
-            .eq("id", image_id)
-            .eq("user_id", _user_id(user))
-            .eq("file_type", "IMAGE")
-            .is_("deleted_at", "null")
-            .limit(1)
-            .execute()
-        )
-    except Exception as e:
-        log_agent("DATABASE", f"Image lookup failed: {e}")
-        result = None
-
-    path = resolve_inside_uploads(result.data[0]["storage_path"]) if result and result.data else None
-
-    if not path:
-        raise HTTPException(
-            status_code=404,
-            detail="The attached image could not be found. Please upload it again.",
-        )
-
-    return result.data[0]["id"], path
+        return None
 
 
 def _conversation_owned_by_user(conversation_id: str, user) -> bool:
@@ -423,34 +435,99 @@ def _update_conversation_title_if_needed(
     ).execute()
 
 
-def _validate_chat_attachments(request: ChatRequest, user) -> Path | None:
+def _plan_attachments(request: ChatRequest, user) -> AttachmentPlan:
     """
-    Ownership checks for the optional PDF and image. Returns the
-    server path of the image (if any).
+    Resolve every file the request refers to, checking ownership.
+    Client values are only IDs; paths come from the database and must
+    resolve inside the upload directory.
     """
-    if request.document_id and not _document_owned_by_user(request.document_id, user):
+    user_id = _user_id(user)
+    plan = AttachmentPlan()
+
+    attached = [str(i) for i in request.attachments]
+    context = [str(i) for i in request.context_file_ids if str(i) not in attached]
+    if request.image_id:
+        attached.append(request.image_id)
+
+    requested = list(dict.fromkeys(attached + context))
+    try:
+        rows = owned_files(requested, user_id)
+    except Exception as e:
+        log_agent("DATABASE", f"Attachment lookup failed: {e}")
+        rows = {}
+
+    if len(rows) != len(requested):
         raise HTTPException(
-            status_code=403,
-            detail="You do not have access to this PDF.",
+            status_code=404,
+            detail="An attached file could not be found. Please upload it again.",
         )
 
-    if request.image_id:
-        _, path = _resolve_owned_image(request.image_id, user)
-        return path
+    pdf_ids = [fid for fid in requested if rows[fid]["file_type"] == FileType.PDF]
+    documents = completed_documents_for_files(pdf_ids, user_id)
 
-    return None
+    for fid in requested:
+        row = rows[fid]
+        if fid in attached:
+            plan.references.append(attachment_reference(row))
+
+        if row["file_type"] == FileType.PDF:
+            document = documents.get(fid)
+            if not document:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"“{row['filename']}” is not ready yet. Please wait until it has been processed.",
+                )
+            plan.documents.append({"id": document["id"], "filename": row["filename"]})
+
+        elif row["file_type"] == FileType.IMAGE:
+            # Images apply to the message they are attached to only.
+            if fid not in attached:
+                continue
+            path = resolve_inside_uploads(row.get("storage_path"))
+            if not path:
+                raise HTTPException(
+                    status_code=404,
+                    detail="An attached image could not be found. Please upload it again.",
+                )
+            plan.images.append({"file_id": fid, "filename": row["filename"], "path": str(path)})
+
+    # Legacy: a bare document_id (PDFs uploaded before files rows existed).
+    if request.document_id and not any(d["id"] == request.document_id for d in plan.documents):
+        document = _document_owned_by_user(request.document_id, user)
+        if not document:
+            raise HTTPException(status_code=403, detail="You do not have access to this PDF.")
+        plan.documents.append({"id": document["id"], "filename": document["filename"]})
+
+    return plan
 
 
-def _record_image_analysis(image_id: str, result: dict) -> None:
+def _message_metadata(plan: AttachmentPlan, request: ChatRequest) -> dict:
+    metadata = {}
+    if plan.references:
+        metadata["attachments"] = plan.references
+    if request.context_file_ids:
+        metadata["context_file_ids"] = [str(i) for i in request.context_file_ids]
+    # Kept for older readers (admin activity) of message metadata.
+    if plan.documents:
+        metadata["document_id"] = plan.documents[0]["id"]
+    if plan.images:
+        metadata["image_id"] = plan.images[0]["file_id"]
+    return metadata
+
+
+def _record_image_analysis(file_id: str, result: dict) -> None:
+    """Persist OCR/vision results with the images/files status vocabularies."""
+    statuses = image_statuses(result.get("ocr_ok"), result.get("vision_ok"))
     try:
         supabase.table("images").update({
             "ocr_text": (result.get("ocr_text") or "")[:20000],
             "vision_result": (result.get("vision_answer") or "")[:20000],
-            "ocr_status": "COMPLETED" if result.get("ocr_ok") else "FAILED",
-            "vision_status": "COMPLETED" if result.get("vision_ok") else "FAILED",
-        }).eq("file_id", image_id).execute()
+            "ocr_status": statuses["ocr_status"],
+            "vision_status": statuses["vision_status"],
+        }).eq("file_id", file_id).execute()
     except Exception as e:
         log_agent("DATABASE", f"Image status update failed: {e}")
+    set_file_status(file_id, statuses["file_status"])
 
 
 async def _read_upload(file: UploadFile, max_mb: int, kind: str) -> bytes:
@@ -507,7 +584,18 @@ async def upload_pdf(
     file_path = save_upload(PDF_UPLOAD_DIR, content, ".pdf")
     user_id = _user_id(user)
 
-    log_agent("PDF", f"Received {original_filename} ({len(content)} bytes)")
+    try:
+        file_row = create_file(
+            user_id, original_filename, str(file_path), FileType.PDF,
+            "application/pdf", len(content), FileStatus.PROCESSING,
+        )
+    except Exception as e:
+        log_agent("PDF", f"File record failed: {e!r}")
+        delete_stored_file(str(file_path))
+        raise HTTPException(status_code=500, detail="PDF upload failed. Please try again.")
+
+    file_id = file_row["id"]
+    log_agent("PDF", f"Received {original_filename} ({len(content)} bytes) as file {file_id}")
 
     def run_ingestion(progress=None) -> str:
         try:
@@ -516,25 +604,29 @@ async def upload_pdf(
                 filename=original_filename,
                 user_id=user_id,
                 progress=progress,
+                file_id=file_id,
             )
-            log_agent("PDF", f"PDF ingestion completed: {document_id}")
-            return document_id
         except Exception as e:
             log_agent("PDF", f"PDF processing failed: {e!r}")
             delete_stored_file(str(file_path))
+            set_file_status(file_id, FileStatus.FAILED)
             log_activity(user_id, "PDF_UPLOAD_FAILED", original_filename, "FAILED", file_name=original_filename)
             raise
+        set_file_status(file_id, FileStatus.PROCESSED)
+        log_agent("PDF", f"PDF ingestion completed: {document_id}")
+        return document_id
 
     def success_payload(document_id: str) -> dict:
         return {
             "success": True,
             "message": "PDF uploaded and processed successfully.",
+            "file_id": file_id,
             "document_id": document_id,
             "filename": original_filename,
             "file_size": len(content),
         }
 
-    failure_message = "We couldn't process this PDF. Please try another file."
+    failure_message = "PDF processing failed. Please try another file."
 
     if not stream:
         try:
@@ -553,7 +645,7 @@ async def upload_pdf(
             events.put({"type": "error", "detail": failure_message})
 
     def event_stream():
-        yield json.dumps({"type": "stage", "stage": "uploaded", "label": PDF_STAGE_LABELS["uploaded"]}) + "\n"
+        yield json.dumps({"type": "stage", "stage": "uploaded", "label": PDF_STAGE_LABELS["uploaded"], "file_id": file_id}) + "\n"
         threading.Thread(target=worker, daemon=True).start()
         while True:
             event = events.get()
@@ -583,8 +675,8 @@ async def upload_image(
     user=Depends(get_current_user),
 ):
     """
-    Upload an image for OCR + Vision analysis. Returns an image_id
-    that only this user can attach to a chat message.
+    Upload an image for OCR + Vision analysis. Returns a file_id that
+    only this user can attach to a chat message.
     """
 
     original_filename = safe_display_name(file.filename)
@@ -612,20 +704,15 @@ async def upload_image(
     user_id = _user_id(user)
 
     try:
-        row = supabase.table("files").insert({
-            "user_id": user_id,
-            "filename": original_filename,
-            "storage_path": str(file_path),
-            "file_type": "IMAGE",
-            "mime_type": mime_type,
-            "file_size": len(content),
-            "status": "UPLOADED",
-        }).execute().data[0]
+        row = create_file(
+            user_id, original_filename, str(file_path), FileType.IMAGE,
+            mime_type, len(content), FileStatus.UPLOADED,
+        )
 
         supabase.table("images").insert({
             "file_id": row["id"],
-            "ocr_status": "PENDING",
-            "vision_status": "PENDING",
+            "ocr_status": ImageStepStatus.PENDING,
+            "vision_status": ImageStepStatus.PENDING,
         }).execute()
 
     except Exception as e:
@@ -639,10 +726,54 @@ async def upload_image(
     return {
         "success": True,
         "message": "Image uploaded successfully.",
+        "file_id": row["id"],
         "image_id": row["id"],
         "filename": original_filename,
+        "mime_type": mime_type,
         "file_size": len(content),
     }
+
+
+# ============================================================
+# USER FILES (owner only)
+# ============================================================
+
+@app.get("/files/{file_id}/content")
+def file_content(file_id: UUID, user=Depends(get_current_user)):
+    """
+    Stream one of the user's own uploaded files (thumbnails, opening a
+    PDF). Unknown, foreign and deleted files are all reported as 404.
+    """
+    row, path = owned_file_path(str(file_id), _user_id(user))
+
+    if not path:
+        raise HTTPException(status_code=404, detail="File not found.")
+
+    return FileResponse(
+        path,
+        media_type=row.get("mime_type") or "application/octet-stream",
+        filename=row["filename"],
+        content_disposition_type="inline",
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
+
+
+@app.delete("/files/{file_id}")
+def delete_file(file_id: UUID, user=Depends(get_current_user)):
+    """Delete one of the user's own uploads (e.g. removed before sending)."""
+    rows = owned_files([str(file_id)], _user_id(user))
+    row = rows.get(str(file_id))
+
+    if not row:
+        raise HTTPException(status_code=404, detail="File not found.")
+
+    try:
+        soft_delete_file(row)
+    except Exception as e:
+        log_agent("FILES", f"Delete failed for {file_id}: {e!r}")
+        raise HTTPException(status_code=500, detail="The file could not be removed. Please try again.")
+
+    return {"success": True}
 
 
 # ============================================================
@@ -745,6 +876,76 @@ def create_conversation(
         raise HTTPException(status_code=500, detail="Unable to create conversation.")
 
 
+@app.post("/conversations/archive-all")
+def archive_all_conversations(user=Depends(get_current_user)):
+    """Remove every chat from the user's history (soft archive, like single delete)."""
+    try:
+        archived = (
+            supabase.table("conversations")
+            .update({"is_archived": True})
+            .eq("user_id", _user_id(user))
+            .eq("is_archived", False)
+            .execute()
+            .data
+            or []
+        )
+        return {"success": True, "archived": len(archived)}
+    except Exception as e:
+        log_agent("DATABASE", f"Archive all conversations failed: {e}")
+        raise HTTPException(status_code=500, detail="Unable to clear your chat history.")
+
+
+def _client_message_metadata(messages: list[dict], user) -> None:
+    """
+    Make stored metadata safe and useful for the browser:
+    - drop server paths written by older versions (image_path);
+    - rebuild attachment references for older messages that only
+      stored document_id / image_id, using rows the user owns.
+    """
+    user_id = _user_id(user)
+    legacy_docs, legacy_images = set(), set()
+
+    for m in messages:
+        meta = m.get("metadata") or {}
+        meta.pop("image_path", None)
+        m["metadata"] = meta
+        if str(m.get("role", "")).upper() == "USER" and not meta.get("attachments"):
+            if meta.get("document_id"):
+                legacy_docs.add(meta["document_id"])
+            if meta.get("image_id"):
+                legacy_images.add(meta["image_id"])
+
+    if not legacy_docs and not legacy_images:
+        return
+
+    try:
+        docs = {
+            d["id"]: d for d in (
+                supabase.table("documents").select("id,filename,file_id")
+                .in_("id", list(legacy_docs)).eq("user_id", user_id).execute().data or []
+            )
+        } if legacy_docs else {}
+        images = owned_files(list(legacy_images), user_id)
+    except Exception as e:
+        log_agent("DATABASE", f"Legacy attachment lookup failed: {e}")
+        return
+
+    for m in messages:
+        meta = m["metadata"]
+        if meta.get("attachments") or str(m.get("role", "")).upper() != "USER":
+            continue
+        rebuilt = []
+        doc = docs.get(meta.get("document_id"))
+        if doc:
+            rebuilt.append({"file_id": doc.get("file_id"), "filename": doc["filename"],
+                            "file_type": FileType.PDF, "mime_type": "application/pdf"})
+        image = images.get(meta.get("image_id"))
+        if image:
+            rebuilt.append(attachment_reference(image))
+        if rebuilt:
+            meta["attachments"] = rebuilt
+
+
 @app.get("/conversations/{conversation_id}/messages")
 def get_conversation_messages(
     conversation_id: str,
@@ -763,10 +964,12 @@ def get_conversation_messages(
             .order("created_at", desc=False)
             .execute()
         )
+        messages = result.data or []
+        _client_message_metadata(messages, user)
         return {
             "success": True,
             "conversation_id": conversation_id,
-            "messages": result.data or [],
+            "messages": messages,
         }
     except Exception as e:
         log_agent("DATABASE", f"Load messages failed: {e}")
@@ -806,8 +1009,12 @@ def archive_conversation(
 
 @app.post("/chat")
 def chat(request: ChatRequest, user=Depends(get_current_user)):
+    """
+    Non-streaming chat through the LangGraph workflow. The graph takes
+    one PDF and one image; the first of each attachment kind is used.
+    """
 
-    image_path = _validate_chat_attachments(request, user)
+    plan = _plan_attachments(request, user)
 
     conversation = _get_or_create_conversation(
         request.conversation_id,
@@ -822,10 +1029,7 @@ def chat(request: ChatRequest, user=Depends(get_current_user)):
         user,
         "USER",
         request.query,
-        metadata={
-            "document_id": request.document_id,
-            "image_id": request.image_id,
-        },
+        metadata=_message_metadata(plan, request),
     )
 
     initial_state = {
@@ -839,10 +1043,10 @@ def chat(request: ChatRequest, user=Depends(get_current_user)):
         "sources": [],
 
         # PDF RAG
-        "document_id": request.document_id,
+        "document_id": plan.documents[0]["id"] if plan.documents else None,
 
         # Image OCR + Vision (server-resolved path only)
-        "image_path": str(image_path) if image_path else None,
+        "image_path": plan.images[0]["path"] if plan.images else None,
         "image_ocr_text": "",
         "image_vision_result": ""
     }
@@ -851,7 +1055,7 @@ def chat(request: ChatRequest, user=Depends(get_current_user)):
         result = chat_graph.invoke(initial_state)
     except Exception as e:
         log_agent("SYSTEM", f"Normal chat failed: {e!r}")
-        log_activity(_user_id(user), "CHAT_ERROR", request.query, "FAILED", document_id=request.document_id)
+        log_activity(_user_id(user), "CHAT_ERROR", request.query, "FAILED", document_id=initial_state["document_id"])
         return {
             "success": False,
             "conversation_id": conversation_id,
@@ -911,11 +1115,11 @@ def _sse(payload: dict) -> str:
 def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
 
     query = request.query
-    document_id = request.document_id
     user_id = _user_id(user)
 
-    # Never allow another user's PDF or image into the workflow.
-    image_path = _validate_chat_attachments(request, user)
+    # Every file is resolved by ID and ownership before anything runs.
+    plan = _plan_attachments(request, user)
+    first_document_id = plan.documents[0]["id"] if plan.documents else None
 
     conversation = _get_or_create_conversation(
         request.conversation_id,
@@ -931,10 +1135,7 @@ def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
         user,
         "USER",
         query,
-        metadata={
-            "document_id": document_id,
-            "image_id": request.image_id,
-        },
+        metadata=_message_metadata(plan, request),
     )
 
     def generate():
@@ -949,12 +1150,15 @@ def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
 
             yield _sse({"type": "status", "stage": "routing", "label": "Choosing the best route"})
 
-            if document_id:
+            if plan.documents:
                 route = "PDF_RAG"
-                route_reason = "An uploaded PDF is attached to this request, so the question will use PDF retrieval."
-            elif image_path:
+                route_reason = (
+                    "PDFs are attached, so the question will use PDF retrieval"
+                    + (" together with image analysis." if plan.images else ".")
+                )
+            elif plan.images:
                 route = "IMAGE"
-                route_reason = "An uploaded image is attached to this request, so OCR + Vision analysis will be used."
+                route_reason = "An image is attached, so OCR + Vision analysis will be used."
             else:
                 decision = route_query(query)
                 route = decision.route
@@ -969,31 +1173,56 @@ def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
             # STEP 2: TOOL EXECUTION
             # =================================================
 
-            tool_result = ""
+            tool_parts = []
             sources = []
             error = ""
 
-            if route == "DIRECT":
-                pass
-
-            elif route in SEARCH_AGENTS:
+            if route in SEARCH_AGENTS:
                 agent, label = SEARCH_AGENTS[route]
                 yield _sse({"type": "status", "stage": "tool", "label": label})
                 result = agent(query)
-                tool_result = result.get("content", "")
+                tool_parts.append(result.get("content", ""))
                 sources = result.get("sources", [])
                 error = result.get("error", "")
 
-            elif route == "PDF_RAG":
-                yield _sse({"type": "status", "stage": "retrieval", "label": "Searching your PDF"})
+            # ---------------- images (one or more) ----------------
+            for index, image in enumerate(plan.images, start=1):
+                suffix = f" ({index} of {len(plan.images)})" if len(plan.images) > 1 else ""
+                set_file_status(image["file_id"], FileStatus.PROCESSING)
                 try:
-                    result = rag_agent(query=query, document_id=document_id)
-                    tool_result = result.get("answer", "")
+                    yield _sse({"type": "status", "stage": "ocr", "label": f"Reading text in the image{suffix}"})
+                    ocr_result = run_ocr(image["path"], query)
+                    yield _sse({"type": "status", "stage": "vision", "label": f"Analyzing the image{suffix}"})
+                    vision_result = run_vision(image["path"], query)
+                    result = combine(ocr_result, vision_result, image["filename"] if suffix else "")
+                    _record_image_analysis(image["file_id"], result)
+                except Exception as e:
+                    result = {"error": str(e), "ocr_ok": False, "vision_ok": False}
+                    _record_image_analysis(image["file_id"], result)
+
+                if result.get("ocr_ok") or result.get("vision_ok"):
+                    tool_parts.append(result["tool_result"])
+                    if result.get("error"):
+                        log_agent("IMAGE", f"Partial image analysis: {result['error']}")
+                else:
+                    error = result.get("error") or "Image analysis failed."
+
+            # ---------------- PDFs (one or more) ----------------
+            if plan.documents and not error:
+                yield _sse({
+                    "type": "status",
+                    "stage": "retrieval",
+                    "label": "Searching your PDF" + ("s" if len(plan.documents) > 1 else ""),
+                })
+                try:
+                    result = rag_agent(query=query, documents=plan.documents)
                     sources = result.get("sources", [])
 
-                    # No relevant PDF information: do not let the LLM
-                    # answer from general knowledge.
-                    if not result.get("chunks"):
+                    if result.get("chunks"):
+                        tool_parts.insert(0, result.get("answer", ""))
+                    elif not plan.images:
+                        # No relevant PDF information: do not let the LLM
+                        # answer from general knowledge.
                         fallback = "I could not find this information in the uploaded PDF."
                         yield _sse({"type": "content", "content": fallback})
                         _save_message(conversation_id, user, "ASSISTANT", fallback, route=route,
@@ -1005,22 +1234,12 @@ def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
                 except Exception as e:
                     error = str(e)
 
-            elif route == "IMAGE":
-                yield _sse({"type": "status", "stage": "image", "label": "Reading text and analyzing the image"})
-                try:
-                    result = analyze_image(str(image_path), query)
-                    _record_image_analysis(request.image_id, result)
-                    tool_result = result["tool_result"]
-                    error = result["error"]
-                except Exception as e:
-                    error = str(e)
-
-            else:
+            if route not in SEARCH_AGENTS and route not in ("DIRECT", "PDF_RAG", "IMAGE"):
                 error = "Unable to determine the appropriate route."
 
             if error:
                 log_agent("SYSTEM", f"Tool execution failed on {route}: {error}")
-                log_activity(user_id, "CHAT_ERROR", query, "FAILED", route=route, document_id=document_id,
+                log_activity(user_id, "CHAT_ERROR", query, "FAILED", route=route, document_id=first_document_id,
                              metadata={"stage": "tool"})
                 yield _sse({
                     "type": "error",
@@ -1038,7 +1257,7 @@ def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
 
             for chunk in stream_response(
                 query=query,
-                tool_result=tool_result,
+                tool_result="\n\n".join(part for part in tool_parts if part),
                 chat_history=current_history
             ):
                 if not chunk:
@@ -1069,7 +1288,7 @@ def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
 
         except Exception as e:
             log_agent("SYSTEM", f"Unexpected streaming error: {e!r}")
-            log_activity(user_id, "CHAT_ERROR", query, "FAILED", route=route or None, document_id=document_id,
+            log_activity(user_id, "CHAT_ERROR", query, "FAILED", route=route or None, document_id=first_document_id,
                          metadata={"stage": "stream"})
             yield _sse({
                 "type": "error",
@@ -1089,7 +1308,8 @@ def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
 
 
 # ============================================================
-# ADMIN API
+# ACCOUNT / ADMIN API
 # ============================================================
 
+app.include_router(account_router)
 app.include_router(admin_router)

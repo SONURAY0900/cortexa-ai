@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/frontend/style.css?v=1.1.0">
+    <link rel="stylesheet" href="/frontend/style.css?v=1.2.0">
 </head>
 <body class="chat-page">
 
@@ -93,13 +93,14 @@
             </div>
 
             <div class="input-wrap">
-                <div id="attachment" class="attachment" hidden></div>
+                <div id="contextBar" class="context-bar" hidden aria-live="polite"></div>
+                <div id="attachmentTray" class="attachment-tray" hidden aria-live="polite" aria-label="Attachments"></div>
 
                 <form id="composer" class="input-area" autocomplete="off">
-                    <button id="attachFileButton" class="tool-btn" type="button" aria-label="Attach a PDF or image" title="Attach a PDF or image">
+                    <button id="attachFileButton" class="tool-btn" type="button" aria-label="Add photos &amp; files" title="Add photos &amp; files">
                         <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21.44 11.05 12.25 20.24a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
                     </button>
-                    <input id="fileInput" type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,.bmp,application/pdf,image/jpeg,image/png,image/webp,image/bmp" hidden>
+                    <input id="fileInput" type="file" multiple accept=".pdf,.jpg,.jpeg,.png,.webp,.bmp,application/pdf,image/jpeg,image/png,image/webp,image/bmp" hidden>
 
                     <div class="input-field">
                         <div id="voicePanel" class="voice-panel" hidden aria-live="polite">
@@ -122,12 +123,12 @@
                     </button>
                 </form>
 
-                <div class="hint">Enter to send · Shift + Enter for a new line · Drop a PDF or image to ask about it</div>
+                <div class="hint">Enter to send · Shift + Enter for a new line · Paste or drop photos and PDFs</div>
             </div>
         </main>
     </div>
 
-    <script src="/frontend/common.js?v=1.1.0"></script>
-    <script src="/frontend/app.js?v=1.1.0"></script>
+    <script src="/frontend/common.js?v=1.2.0"></script>
+    <script src="/frontend/app.js?v=1.2.0"></script>
 </body>
 </html>

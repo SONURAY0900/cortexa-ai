@@ -10,7 +10,8 @@ def create_document(
     file_path: str,
     file_type: str,
     file_size: int,
-    user_id: str | None = None
+    user_id: str | None = None,
+    file_id: str | None = None
 ) -> str:
 
     response = (
@@ -23,6 +24,7 @@ def create_document(
                 "file_type": file_type,
                 "file_size": file_size,
                 "user_id": user_id,
+                "file_id": file_id,
                 "processing_status": "PROCESSING"
             }
         )

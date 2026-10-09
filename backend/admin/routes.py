@@ -41,6 +41,7 @@ from config.settings import (
 from database.connection import supabase
 from rag.retrieval.vector_store import delete_document
 from services.activity import log_admin_action, table_available
+from services.files import FileStatus, ImageStepStatus
 from services.storage import (
     IMAGE_UPLOAD_DIR,
     PDF_UPLOAD_DIR,
@@ -166,6 +167,7 @@ def _chat_events(messages: list[dict]) -> list[dict]:
             answered = bool(reply and str(reply.get("role")).upper() == "ASSISTANT")
             route = m.get("route") or (reply.get("route") if answered else None)
             metadata = m.get("metadata") or {}
+            attachment_names = [a.get("filename") for a in metadata.get("attachments") or [] if a.get("filename")]
             events.append({
                 "id": m["id"],
                 "source": "messages",
@@ -177,6 +179,7 @@ def _chat_events(messages: list[dict]) -> list[dict]:
                 "status_note": "" if answered else "No response recorded",
                 "route": route,
                 "document_id": metadata.get("document_id"),
+                "attachment_names": attachment_names,
                 "conversation_id": m["conversation_id"],
                 "deletable": False,
             })
@@ -229,10 +232,12 @@ def _load_activity_logs() -> list[dict]:
 
 
 def _image_status(f: dict) -> str:
-    if "FAILED" in (f.get("ocr_status"), f.get("vision_status")):
-        return "FAILED"
-    if f.get("ocr_status") == "COMPLETED" or f.get("vision_status") == "COMPLETED":
+    # images.ocr_status / vision_status use PENDING | SUCCESS | FAILED.
+    steps = (f.get("ocr_status"), f.get("vision_status"))
+    if ImageStepStatus.SUCCESS in steps:
         return "SUCCESS"
+    if ImageStepStatus.FAILED in steps:
+        return "FAILED"
     return "PENDING"
 
 
@@ -243,7 +248,8 @@ def _all_events() -> list[dict]:
 
     for e in events:
         doc = documents.get(e["document_id"]) if e["document_id"] else None
-        e["source_name"] = doc["filename"] if doc else None
+        names = e.pop("attachment_names", [])
+        e["source_name"] = ", ".join(names) if names else (doc["filename"] if doc else None)
 
     for d in documents.values():
         status = (d.get("processing_status") or "").upper()
@@ -726,7 +732,7 @@ def documents(
 
 @router.delete("/documents/{document_id}")
 def remove_document(document_id: str, admin=Depends(get_current_admin)):
-    rows = supabase.table("documents").select("id,filename,file_path,user_id").eq("id", document_id).limit(1).execute().data
+    rows = supabase.table("documents").select("id,filename,file_path,user_id,file_id").eq("id", document_id).limit(1).execute().data
     if not rows:
         raise HTTPException(status_code=404, detail="Document not found.")
 
@@ -740,6 +746,9 @@ def remove_document(document_id: str, admin=Depends(get_current_admin)):
         raise HTTPException(status_code=500, detail="The document could not be deleted.")
 
     file_removed = delete_stored_file(doc.get("file_path"))
+    if doc.get("file_id"):
+        # Keep the canonical file record, marked as deleted.
+        supabase.table("files").update({"status": FileStatus.DELETED, "deleted_at": datetime.now(timezone.utc).isoformat()}).eq("id", doc["file_id"]).execute()
 
     log_admin_action(admin, "DELETE_DOCUMENT", "document", document_id, "SUCCESS", {
         "filename": doc.get("filename"),
