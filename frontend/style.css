@@ -426,9 +426,9 @@ a.source-card:hover { border-color: var(--accent); transform: translateY(-2px); 
 .thinking-bar { position: absolute; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, transparent, var(--accent), var(--accent-2), transparent); background-size: 200% 100%; animation: shimmer 1.4s linear infinite; }
 .thinking-card.resolved .thinking-bar { background: var(--success); animation: none; opacity: .7; }
 .thinking-row { display: flex; align-items: center; gap: 10px; font-size: 13.5px; color: var(--text-2); margin-bottom: 12px; }
-.thinking-label { animation: fadeIn .3s; }
+.thinking-label { display: inline-block; }
 .thinking-label.swap { animation: statusSwap .3s var(--ease); }
-@keyframes statusSwap { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@keyframes statusSwap { from { opacity: .45; transform: translateY(3px); } to { opacity: 1; transform: none; } }
 .typing { display: inline-flex; gap: 4px; }
 .typing i { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: bounce 1.2s infinite ease-in-out; }
 .typing i:nth-child(2) { animation-delay: .15s; }

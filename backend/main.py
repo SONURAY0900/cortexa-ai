@@ -502,9 +502,9 @@ def _plan_attachments(request: ChatRequest, user) -> AttachmentPlan:
 
 
 def _message_metadata(plan: AttachmentPlan, request: ChatRequest) -> dict:
-    metadata = {}
-    if plan.references:
-        metadata["attachments"] = plan.references
+    # "attachments" is always present on new messages (possibly empty), which
+    # tells readers not to treat document_id below as an attached file.
+    metadata = {"attachments": plan.references}
     if request.context_file_ids:
         metadata["context_file_ids"] = [str(i) for i in request.context_file_ids]
     # Kept for older readers (admin activity) of message metadata.
@@ -909,7 +909,7 @@ def _client_message_metadata(messages: list[dict], user) -> None:
         meta = m.get("metadata") or {}
         meta.pop("image_path", None)
         m["metadata"] = meta
-        if str(m.get("role", "")).upper() == "USER" and not meta.get("attachments"):
+        if str(m.get("role", "")).upper() == "USER" and "attachments" not in meta and "context_file_ids" not in meta:
             if meta.get("document_id"):
                 legacy_docs.add(meta["document_id"])
             if meta.get("image_id"):
@@ -932,7 +932,7 @@ def _client_message_metadata(messages: list[dict], user) -> None:
 
     for m in messages:
         meta = m["metadata"]
-        if meta.get("attachments") or str(m.get("role", "")).upper() != "USER":
+        if "attachments" in meta or "context_file_ids" in meta or str(m.get("role", "")).upper() != "USER":
             continue
         rebuilt = []
         doc = docs.get(meta.get("document_id"))

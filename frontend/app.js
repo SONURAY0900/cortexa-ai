@@ -199,7 +199,7 @@ function messageAttachments(items) {
         const style = `animation-delay:${i * 50}ms`;
 
         if (isImage) {
-            const img = el("img", { alt: a.filename || "Image", loading: "lazy" });
+            const img = el("img", { alt: a.filename || "Image", decoding: "async" });
             const card = el("button", {
                 class: "msg-image is-loading", type: "button", style,
                 title: a.filename, "aria-label": `Open image ${a.filename || ""}`,
@@ -950,7 +950,7 @@ const attachments = {
                 ? el("span", { class: "attach-thumb" }, [el("img", { src: a.previewUrl, alt: "" })])
                 : el("span", { class: "file-badge pdf", html: ICON_PDF });
 
-            node.replaceChildren(
+            node.replaceChildren(...[
                 visual,
                 el("span", { class: "file-meta" }, [
                     el("span", { class: "file-name", text: a.name, title: a.name }),
@@ -968,7 +968,7 @@ const attachments = {
                     html: ICONS.close,
                     onclick: () => attachments.remove(a.localId),
                 }),
-            );
+            ].filter(Boolean));
             return node;
         });
         tray.replaceChildren(...nodes);

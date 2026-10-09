@@ -119,6 +119,24 @@ class ChatAttachments(Base):
         response = self.client.post("/chat/stream", json={"query": "hi", "context_file_ids": [str(uuid.uuid4())]})
         self.assertEqual(response.status_code, 404)
 
+    def test_context_pdf_is_not_shown_as_attachment(self):
+        # A follow-up that only used a PDF as context must not render a card.
+        messages = [
+            {"role": "USER", "metadata": {"attachments": [], "context_file_ids": ["x"], "document_id": "d"}},
+            {"role": "USER", "metadata": {"context_file_ids": ["x"], "document_id": "d"}},
+        ]
+        with mock.patch.object(main, "owned_files", side_effect=AssertionError("no lookup expected")):
+            main._client_message_metadata(messages, make_user())
+        self.assertEqual(messages[0]["metadata"]["attachments"], [])
+        self.assertNotIn("attachments", messages[1]["metadata"])
+
+    def test_message_metadata_always_has_attachments_key(self):
+        plan = main.AttachmentPlan(documents=[{"id": "doc-1", "filename": "a.pdf"}])
+        request = main.ChatRequest(query="q", context_file_ids=[uuid.uuid4()])
+        metadata = main._message_metadata(plan, request)
+        self.assertEqual(metadata["attachments"], [])
+        self.assertEqual(metadata["document_id"], "doc-1")
+
     def test_metadata_never_returns_server_paths(self):
         messages = [{"role": "USER", "metadata": {"image_path": "D:/secret/backend/uploads/images/x.png"}}]
         main._client_message_metadata(messages, make_user())
