@@ -5,6 +5,8 @@
    - Supabase Auth (config served by the backend)
    - API helper with friendly error messages
    - Toasts, confirm dialog, auth modal, user menu
+
+   Requires auth-flows.js (OtpFlow, describeAuthError) loaded first.
    ===================================================== */
 
 "use strict";
@@ -656,18 +658,35 @@ const Api = {
 const AuthModal = {
     current: null,
 
+    /**
+     * Modes: "login" (password), "otp" (email for a sign-in code),
+     * "otp-code" (enter the code), "signup", "forgot", "reset".
+     * "login" and "otp" are the two login methods; switching between them
+     * keeps what was typed in the email field.
+     */
     open(mode = "login", { message = "" } = {}) {
         AuthModal.current?.close();
 
-        const state = { mode };
+        const state = { mode, otp: null, timer: null, expiredShown: false };
         const title = el("h2", { id: "authTitle", class: "modal-title" });
         const subtitle = el("p", { class: "modal-text" });
+        const passwordTab = el("button", { class: "auth-method-btn", type: "button", text: "Password" });
+        const otpTab = el("button", { class: "auth-method-btn", type: "button", text: "Email code" });
+        const methods = el("div", { class: "auth-methods", role: "group", "aria-label": "Login method" }, [passwordTab, otpTab]);
         const nameInput = el("input", { class: "input", type: "text", placeholder: "Full name", autocomplete: "name", "aria-label": "Full name" });
         const emailInput = el("input", { class: "input", type: "email", placeholder: "Email", autocomplete: "email", "aria-label": "Email", required: true });
         const passwordInput = el("input", { class: "input", type: "password", placeholder: "Password", autocomplete: "current-password", "aria-label": "Password", required: true });
         const confirmInput = el("input", { class: "input", type: "password", placeholder: "Confirm new password", autocomplete: "new-password", "aria-label": "Confirm new password" });
+        const otpInfo = el("p", { class: "otp-info", "aria-live": "polite" });
+        const codeInput = el("input", {
+            class: "input otp-input", type: "text", inputmode: "numeric", autocomplete: "one-time-code",
+            pattern: "[0-9]*", maxlength: "10", placeholder: "Enter code", "aria-label": "Sign-in code from the email",
+        });
         const feedback = el("div", { class: "form-feedback", role: "alert" });
         const submit = el("button", { class: "btn btn-primary btn-block", type: "submit" });
+        const resend = el("button", { class: "link-btn", type: "button" });
+        const changeEmail = el("button", { class: "link-btn", type: "button", text: "Use a different email" });
+        const otpLinks = el("div", { class: "otp-links" }, [resend, changeEmail]);
         const google = el("button", { class: "btn btn-outline btn-block", type: "button" }, [
             el("span", { html: '<svg width="16" height="16" viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="m6.3 14.7 6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>' }),
             "Continue with Google",
@@ -677,7 +696,8 @@ const AuthModal = {
         const divider = el("div", { class: "divider" }, [el("span", { text: "or" })]);
 
         const form = el("form", { class: "auth-form", novalidate: true }, [
-            nameInput, emailInput, passwordInput, confirmInput, forgot, feedback, submit, divider, google, switcher,
+            methods, nameInput, emailInput, passwordInput, confirmInput, otpInfo, codeInput,
+            forgot, feedback, submit, otpLinks, divider, google, switcher,
         ]);
 
         const show = (node, visible) => { node.hidden = !visible; };
@@ -685,50 +705,168 @@ const AuthModal = {
             feedback.textContent = text || "";
             feedback.className = `form-feedback ${text ? type : ""}`;
         };
+        const setBusy = (busy) => {
+            submit.disabled = busy;
+            submit.classList.toggle("is-loading", busy);
+            resend.disabled = busy || (state.otp?.secondsUntilResend || 0) > 0;
+        };
+
+        const otpFlow = () => {
+            state.otp ||= new OtpFlow({
+                auth: Auth.client.auth,
+                expirySeconds: Auth.config?.email_otp?.expiry_seconds ?? 600,
+                resendSeconds: Auth.config?.email_otp?.resend_seconds ?? 60,
+                redirectTo: window.location.origin + window.location.pathname,
+            });
+            return state.otp;
+        };
+
+        // Countdowns for the code screen (display only: Supabase decides
+        // whether a code is still valid).
+        const tick = () => {
+            const otp = state.otp;
+            if (!otp || state.mode !== "otp-code") return;
+            otpInfo.replaceChildren(
+                "We sent a sign-in code to ", el("strong", { text: otp.email }), ". ",
+                otp.expired ? "The code has expired." : `It expires in ${formatCountdown(otp.secondsUntilExpiry)}.`,
+            );
+            const wait = otp.secondsUntilResend;
+            resend.textContent = wait > 0 ? `Resend code in ${wait} s` : "Resend code";
+            resend.disabled = wait > 0 || otp.busy;
+            if (otp.expired && !state.expiredShown) {
+                state.expiredShown = true;
+                setFeedback(AUTH_MESSAGES.codeExpired);
+            }
+        };
+        const startTimer = () => {
+            clearInterval(state.timer);
+            state.expiredShown = false;
+            tick();
+            state.timer = setInterval(tick, 1000);
+        };
+        const stopTimer = () => { clearInterval(state.timer); state.timer = null; };
 
         const render = () => {
             const m = state.mode;
-            title.textContent = { login: "Welcome back", signup: "Create your account", forgot: "Reset your password", reset: "Choose a new password" }[m];
+            const loginMethod = m === "login" || m === "otp";
+            title.textContent = {
+                login: "Welcome back", otp: "Welcome back", "otp-code": "Check your email",
+                signup: "Create your account", forgot: "Reset your password", reset: "Choose a new password",
+            }[m];
             subtitle.textContent = {
                 login: "Sign in to chat, upload PDFs and keep your history.",
+                otp: "We'll email you a one-time sign-in code. New here? This also creates your account.",
+                "otp-code": "Enter the code from the email to sign in.",
                 signup: "It only takes a moment.",
                 forgot: "We'll email you a secure reset link.",
                 reset: "Enter your new password twice.",
             }[m];
+            show(methods, loginMethod);
+            passwordTab.setAttribute("aria-pressed", String(m === "login"));
+            otpTab.setAttribute("aria-pressed", String(m === "otp"));
             show(nameInput, m === "signup");
-            show(emailInput, m !== "reset");
-            show(passwordInput, m !== "forgot");
+            show(emailInput, m !== "reset" && m !== "otp-code");
+            show(passwordInput, m === "login" || m === "signup" || m === "reset");
             show(confirmInput, m === "reset");
+            show(otpInfo, m === "otp-code");
+            show(codeInput, m === "otp-code");
+            show(otpLinks, m === "otp-code");
             show(forgot, m === "login");
-            show(google, m === "login" || m === "signup");
-            show(divider, m === "login" || m === "signup");
-            show(switcher, m !== "reset");
+            show(google, loginMethod || m === "signup");
+            show(divider, loginMethod || m === "signup");
+            show(switcher, m !== "reset" && m !== "otp-code");
             passwordInput.placeholder = m === "reset" ? "New password" : "Password";
             passwordInput.autocomplete = m === "login" ? "current-password" : "new-password";
-            submit.textContent = { login: "Log in", signup: "Sign up", forgot: "Send reset link", reset: "Update password" }[m];
-            switcher.textContent = m === "login" ? "New here? Create an account" : m === "signup" ? "Already have an account? Log in" : "Back to log in";
+            submit.textContent = {
+                login: "Log in", otp: "Email me a code", "otp-code": "Verify and sign in",
+                signup: "Sign up", forgot: "Send reset link", reset: "Update password",
+            }[m];
+            switcher.textContent = loginMethod ? "New here? Create an account" : m === "signup" ? "Already have an account? Log in" : "Back to log in";
+            if (m === "otp-code") startTimer(); else stopTimer();
             setFeedback(message, "info");
             message = "";
         };
 
-        forgot.addEventListener("click", () => { state.mode = "forgot"; render(); emailInput.focus(); });
-        switcher.addEventListener("click", () => {
-            state.mode = state.mode === "login" ? "signup" : "login";
+        const setMode = (next, focus) => {
+            state.mode = next;
             render();
+            focus?.focus();
+        };
+
+        passwordTab.addEventListener("click", () => setMode("login", emailInput.value ? passwordInput : emailInput));
+        otpTab.addEventListener("click", () => setMode("otp", emailInput));
+        forgot.addEventListener("click", () => setMode("forgot", emailInput));
+        switcher.addEventListener("click", () => setMode(state.mode === "login" || state.mode === "otp" ? "signup" : "login"));
+        changeEmail.addEventListener("click", () => {
+            state.otp?.reset();
+            codeInput.value = "";
+            setMode("otp", emailInput);
+        });
+        codeInput.addEventListener("input", () => {
+            codeInput.value = codeInput.value.replace(/\D/g, "").slice(0, 10);
+        });
+
+        resend.addEventListener("click", async () => {
+            if (!state.otp || state.otp.busy) return;
+            setBusy(true);
+            setFeedback("");
+            const result = await state.otp.resend();
+            setBusy(false);
+            if (result.busy) return;
+            if (result.ok) {
+                codeInput.value = "";
+                startTimer();
+                setFeedback("A new code is on its way. Use the code from the newest email.", "success");
+                codeInput.focus();
+            } else {
+                setFeedback(result.message);
+                tick();
+            }
         });
 
         google.addEventListener("click", async () => {
             google.disabled = true;
             setFeedback("Opening Google sign-in…", "info");
-            const { error } = await Auth.client.auth.signInWithOAuth({
-                provider: "google",
-                options: { redirectTo: window.location.origin + window.location.pathname },
-            });
-            if (error) {
-                setFeedback(error.message || "Google sign-in failed.");
+            try {
+                const { error } = await Auth.client.auth.signInWithOAuth({
+                    provider: "google",
+                    options: { redirectTo: window.location.origin + window.location.pathname },
+                });
+                if (error) throw error;
+            } catch (error) {
+                setFeedback(describeAuthError(error) || "Google sign-in failed.");
                 google.disabled = false;
             }
         });
+
+        const submitOtp = async (m) => {
+            const otp = otpFlow();
+            if (otp.busy) return;
+            setBusy(true);
+            setFeedback("");
+            try {
+                if (m === "otp") {
+                    const result = await otp.request(emailInput.value);
+                    if (result.busy) return;
+                    if (!result.ok) return setFeedback(result.message);
+                    codeInput.value = "";
+                    setMode("otp-code", codeInput);
+                } else {
+                    const result = await otp.verify(codeInput.value);
+                    if (result.busy) return;
+                    if (!result.ok) {
+                        setFeedback(result.message);
+                        codeInput.select();
+                        return;
+                    }
+                    modal.close();
+                    Toast.success("Signed in successfully.");
+                }
+            } finally {
+                setBusy(false);
+                tick();
+            }
+        };
 
         form.addEventListener("submit", async (event) => {
             event.preventDefault();
@@ -736,17 +874,18 @@ const AuthModal = {
                 setFeedback(MESSAGES.network);
                 return;
             }
+            const m = state.mode;
+            if (m === "otp" || m === "otp-code") return submitOtp(m);
+
             const email = emailInput.value.trim();
             const password = passwordInput.value;
-            const m = state.mode;
 
             if (m !== "reset" && !email) return setFeedback("Please enter your email address.");
             if ((m === "login" || m === "signup" || m === "reset") && !password) return setFeedback("Please enter your password.");
             if ((m === "signup" || m === "reset") && password.length < 6) return setFeedback("Password must be at least 6 characters.");
             if (m === "reset" && password !== confirmInput.value) return setFeedback("Passwords do not match.");
 
-            submit.disabled = true;
-            submit.classList.add("is-loading");
+            setBusy(true);
             setFeedback("");
 
             try {
@@ -779,17 +918,22 @@ const AuthModal = {
                     Toast.success("Password updated.");
                 }
             } catch (error) {
-                setFeedback(error?.message || "Authentication failed. Please try again.");
+                setFeedback(describeAuthError(error) || "Authentication failed. Please try again.");
             } finally {
-                submit.disabled = false;
-                submit.classList.remove("is-loading");
+                setBusy(false);
             }
         });
 
         const modal = Modal.open([
             el("div", { class: "modal-brand" }, [el("img", { src: "/frontend/assets/logo/logo.svg", width: "40", height: "40", alt: "" })]),
             title, subtitle, form,
-        ], { labelledBy: "authTitle", onClose: () => { AuthModal.current = null; } });
+        ], {
+            labelledBy: "authTitle",
+            onClose: () => {
+                stopTimer();
+                AuthModal.current = null;
+            },
+        });
 
         AuthModal.current = modal;
         render();

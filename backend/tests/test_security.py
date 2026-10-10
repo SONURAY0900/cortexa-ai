@@ -175,6 +175,26 @@ class AdminAuthorization(Base):
         self.login_as(make_user(email=ADMIN_EMAIL.upper()))
         self.assertEqual(self.client.get("/admin/me").status_code, 200)
 
+    def test_email_code_sign_in_grants_nothing_extra(self):
+        # An account that signed in with an emailed code looks the same to
+        # the backend as a password account: same token, same checks.
+        user = make_user(email="someone@example.com")
+        user.app_metadata = {"provider": "email", "providers": ["email"]}
+        self.profile_role("ADMIN")
+        self.login_as(user)
+        self.assertEqual(self.client.get("/admin/me").status_code, 403)
+
+    def test_email_code_admin_keeps_admin_access(self):
+        if not settings.ADMIN_EMAILS:
+            self.skipTest("ADMIN_EMAIL not configured")
+        user = make_user(email=ADMIN_EMAIL)
+        user.app_metadata = {"provider": "email", "providers": ["email", "google"]}
+        self.profile_role("ADMIN")
+        self.login_as(user)
+        self.assertEqual(self.client.get("/admin/me").status_code, 200)
+        self.profile_role("USER")
+        self.assertEqual(self.client.get("/admin/me").status_code, 403)
+
     def test_is_admin_rules(self):
         self.profile_role(None)                                     # no profile row
         self.assertFalse(is_admin(make_user()))

@@ -19,7 +19,7 @@ ACTION_MAX_CHARS = 500
 _table_state: dict[str, bool] = {}
 
 
-def table_available(table: str) -> bool:
+def table_available(table: str, column: str = "id") -> bool:
     """
     Cached check that a table exists and is readable by the backend.
     A missing table is re-checked on the next call so running the
@@ -30,7 +30,7 @@ def table_available(table: str) -> bool:
         return True
 
     try:
-        supabase.table(table).select("id").limit(1).execute()
+        supabase.table(table).select(column).limit(1).execute()
         _table_state[table] = True
     except Exception:
         if table not in _table_state:

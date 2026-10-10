@@ -54,3 +54,27 @@ MAX_AUDIO_MB = int(os.getenv("MAX_AUDIO_MB", "25"))
 # default (10 minutes) would let one hung call hold a worker thread.
 GROQ_TIMEOUT_S = float(os.getenv("GROQ_TIMEOUT_S", "60"))
 GROQ_MAX_RETRIES = int(os.getenv("GROQ_MAX_RETRIES", "2"))
+
+# Email one-time-code sign-in. Supabase Auth issues, expires and verifies
+# every code: set "Email OTP expiration" to 600 seconds in the Supabase
+# Dashboard (Authentication → Sign In / Providers → Email). These values
+# are only shown to the user (countdowns) and must match that setting and
+# Supabase's resend interval; the browser never decides validity.
+EMAIL_OTP_EXPIRY_S = int(os.getenv("EMAIL_OTP_EXPIRY_S", "600"))
+EMAIL_OTP_RESEND_S = int(os.getenv("EMAIL_OTP_RESEND_S", "60"))
+
+# Welcome email for new accounts (services/welcome_email.py). Disabled
+# unless a provider is configured: "smtp", "resend" or "brevo".
+WELCOME_EMAIL_PROVIDER = os.getenv("WELCOME_EMAIL_PROVIDER", "").strip().lower()
+EMAIL_FROM = os.getenv("EMAIL_FROM", "").strip()
+APP_PUBLIC_URL = os.getenv("APP_PUBLIC_URL", "").strip().rstrip("/")
+SUPPORT_EMAIL = os.getenv("SUPPORT_EMAIL", "").strip()
+SUPPORT_URL = os.getenv("SUPPORT_URL", "").strip()
+
+SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+BREVO_API_KEY = os.getenv("BREVO_API_KEY", "")

@@ -75,9 +75,10 @@ Supabase per user.
 - **Voice input:** Whisper transcription with optional auto-send.
 - **Streaming UI:** live stages ("Choosing the best route", "Reading text in the
   image", "Writing the answer"), sources and retry.
-- **Accounts:** email/password and Google sign-in through Supabase Auth, plus
-  profile (display name) and settings (theme, voice language, auto-send,
-  change password, log out everywhere, archive all chats).
+- **Accounts:** password, emailed one-time code and Google sign-in through
+  Supabase Auth, a welcome email for new accounts, plus profile (display name)
+  and settings (theme, voice language, auto-send, change password, log out
+  everywhere, archive all chats).
 - **Admin panel:** dashboard, users, documents, images, activity, audit log and
   system health, all behind server-side role checks.
 - **Light/dark theme** and a responsive layout down to phone width.
@@ -264,6 +265,116 @@ Settings or left on automatic detection.
 - **Logout** signs out with Supabase and clears the local session. HTML pages
   are served with `Cache-Control: no-cache`.
 
+### Sign-in methods
+
+The sign-in dialog (shared by every page, admins included) offers:
+
+| Method | How it works |
+|---|---|
+| **Password** | `signInWithPassword`. Sign-up, email confirmation and "Forgot password?" work as before. |
+| **Email code** | `signInWithOtp` sends a one-time code, `verifyOtp({ type: "email" })` checks it. |
+| **Continue with Google** | Supabase Google OAuth. |
+
+Switching between **Password** and **Email code** keeps the email you typed.
+All three end in the same Supabase session, which the shared `Auth` manager
+picks up through `onAuthStateChange`. Pages, the user menu and the
+Back/Forward handling don't care which method was used.
+
+Error messages keep problems apart: a network failure says the sign-in
+service is unreachable and is never shown as a wrong password or code, a
+`429` asks you to wait, and an email-sending failure says so.
+
+### Email code (OTP) sign-in
+
+1. Choose **Email code**, enter your email and click **Email me a code**.
+2. Supabase emails a numeric code. If the email is new, Supabase creates the
+   account at this step, so the response is identical for registered and
+   unknown addresses (no account enumeration).
+3. Enter the code and click **Verify and sign in**. The dialog shows a
+   10-minute countdown and a 60-second **Resend code** timer.
+
+Rules:
+
+- **Validity (10 minutes) is enforced by Supabase**, by the project setting
+  "Email OTP expiration" = `600` seconds. The browser countdown is display
+  only (its value comes from `EMAIL_OTP_EXPIRY_S` via `/config`) and never
+  accepts or rejects a code; every code is checked by Supabase.
+- **Resend** asks Supabase for a new code. Supabase keeps only the newest code
+  for an account, so codes from earlier emails stop working.
+- Supabase answers "incorrect" and "expired" with the same error
+  (`otp_expired`), so the dialog says "incorrect or has expired" unless the
+  countdown has run out, in which case it says the code expired.
+- Buttons are disabled while a request is running, so double clicks send one
+  request.
+- Codes and email addresses are never written to the console or server logs.
+- A code sign-in grants nothing extra: admin access still requires the rules
+  in [§13](#13-roles-and-admin-access).
+
+### Required Supabase settings
+
+These are Dashboard settings; the app can't change or read them.
+
+| Where (Supabase Dashboard) | Setting |
+|---|---|
+| Authentication → Sign In / Providers → Email | **Email OTP expiration: `600`** seconds (default is 3600). This also applies to the other email links and codes (sign-up confirmation, password reset). |
+| Authentication → Emails → Templates → **Magic Link** | Include the code: `Your sign-in code is {{ .Token }}`. Existing confirmed users receive this template. |
+| Authentication → Emails → Templates → **Confirm signup** | Also include `{{ .Token }}` (keep `{{ .ConfirmationURL }}` for password sign-ups). With "Confirm email" on, a **new** account requesting a code receives this template, not Magic Link. |
+| Authentication → Sign In / Providers → Email | Keep **Confirm email** on. |
+| Authentication → URL Configuration | Site URL plus redirect URLs for local (`http://127.0.0.1:8000/**`) and Render (`https://<your-app>.onrender.com/**`). |
+| Authentication → Emails → SMTP Settings | A custom SMTP server for production. Supabase's built-in sender only delivers to your team's addresses and is limited to about 2 emails per hour. |
+| Authentication → Sign In / Providers → Google | Unchanged; the Render URL must also be an authorized redirect in Google Cloud. |
+
+Example template body (works for both templates):
+
+```html
+<h2>Your sign-in code</h2>
+<p>Enter this code in Agentic AI ChatBot: <strong>{{ .Token }}</strong></p>
+<p>It expires in 10 minutes. If you didn't request it, ignore this email.</p>
+```
+
+### Welcome email
+
+New accounts get one welcome email ("Welcome to Agentic AI ChatBot"), whether
+they signed up with a password, an email code or Google. Supabase Auth only
+sends its own auth emails, so the backend sends this one through the provider
+you configure (`WELCOME_EMAIL_PROVIDER`). With no provider configured, no
+welcome email is sent. Accounts created during that time are recorded as
+`SKIPPED` / `not_configured`, and still get the email on their next visit
+once a provider is set up and the backend restarted, if the account is less
+than 7 days old.
+
+How it works ([`services/welcome_email.py`](backend/services/welcome_email.py)):
+
+- **Trigger:** `/auth/me`, which every page calls once per signed-in user,
+  queues a background task for the verified user. The email must be
+  confirmed, so the address belongs to the account.
+- **Only new accounts:** table `welcome_emails` has one row per account.
+  Migration `20261011` adds a `SKIPPED` row for every account that already
+  exists, and accounts older than 7 days without a row are skipped too. An
+  existing user who signs in again never gets one, however they sign in.
+- **At most once:** the backend claims the row with an `INSERT` before
+  sending; parallel requests or servers lose on the primary key.
+- **Failures:** if the provider reports that nothing was sent, the row is
+  marked `FAILED` and retried on a later visit (10 minutes apart, 3 attempts).
+  If the outcome is unknown (for example a crash mid-send), the row stays
+  `SENDING` and is never resent. An account can miss its welcome email but
+  never gets two. With Resend, an `Idempotency-Key` also stops repeats on
+  Resend's side.
+- **Logs** record the user id and a short outcome code only, never the
+  address, the email body or credentials.
+
+Providers (no new Python packages; set the keys on the server only):
+
+| `WELCOME_EMAIL_PROVIDER` | Needs | Notes |
+|---|---|---|
+| `smtp` | `SMTP_HOST`, `SMTP_PORT` (587 STARTTLS / 465 SSL), `SMTP_USERNAME`, `SMTP_PASSWORD` | Any SMTP account, such as the one you configured for Supabase. **Blocked on Render's free instances**, which block outbound SMTP ports. |
+| `resend` | `RESEND_API_KEY` | HTTPS API (free tier available). Sending to any address needs a verified domain. |
+| `brevo` | `BREVO_API_KEY` | HTTPS API (free tier available). Needs a verified sender. |
+
+All providers also need `EMAIL_FROM`. Set `APP_PUBLIC_URL` for the
+**Start chatting** link, and `SUPPORT_EMAIL` or `SUPPORT_URL` to show a
+support line (left out when empty).
+
 ## 13. Roles and admin access
 
 Admins use the **same login page** as everyone else. A request is admin only
@@ -315,7 +426,9 @@ Migration `20261010_protect_profile_role.sql` stops anyone from changing
 - **Uploads:** size limits (`MAX_*_MB`), PDF magic-byte check, UUID-prefixed
   sanitized file names, and deletion confined to `backend/uploads/`.
 - **Secrets stay on the server.** The browser only receives the publishable
-  key. `.env` is git-ignored, and `.env.example` contains placeholders only.
+  key. Email-provider keys (`SMTP_PASSWORD`, `RESEND_API_KEY`,
+  `BREVO_API_KEY`) are read by the backend only. `.env` is git-ignored, and
+  `.env.example` contains placeholders only.
 - **Database:** Row Level Security stays enabled. The logging tables have RLS
   with no policies, so only the backend can use them.
 - **Prompt injection:** RAG, OCR, vision and search prompts tell the model to
@@ -348,6 +461,7 @@ Tables in the `public` schema that the backend uses:
 | `audio_files` | voice transcription records |
 | `activity_logs` | voice use and failed requests/uploads (migration 20261008) |
 | `admin_audit_log` | every destructive admin action (migration 20261008) |
+| `welcome_emails` | one row per account: welcome email status, no address or content (migration 20261011) |
 
 RPCs: `match_document_chunks` (vector search) and `keyword_document_chunks`
 (keyword search).
@@ -362,9 +476,10 @@ order, in the Supabase SQL editor. Each is idempotent and forward-only.
 | `20261008_activity_logging.sql` | `activity_logs` and `admin_audit_log` tables (RLS on, no policies) |
 | `20261009_profiles_backend_access.sql` | lets the backend role read and write `profiles` |
 | `20261010_protect_profile_role.sql` | trigger: `profiles.role` can't be changed (or set to anything but `USER` on insert) except by trusted server roles |
+| `20261011_welcome_emails.sql` | `welcome_emails` table (RLS on, no policies) and a `SKIPPED` row for every existing account |
 
 The app runs without `20261008`, but the admin panel then shows only data
-from the core tables.
+from the core tables. Without `20261011`, no welcome email is sent.
 
 ## 17. Project structure
 
@@ -386,7 +501,8 @@ backend/
     query/                query classification and transform
     evaluation/           offline RAG evaluation tools and datasets
     pipeline.py           ingestion orchestration and outcomes
-  services/               storage, file ownership, activity log, image analysis
+  services/               storage, file ownership, activity log, image analysis,
+                          welcome email
   scripts/grant_admin.py  grant or revoke the admin role
   scripts/manual/         manual live-API smoke scripts (not unit tests)
   tests/                  unittest suites (all external services mocked)
@@ -396,10 +512,12 @@ frontend/
   settings.html settings.js settings
   admin.html  admin.js    admin panel
   about.html              about page
-  common.js               shared auth/session, API client, UI helpers
+  auth-flows.js           sign-in logic without DOM: email code flow, auth error messages
+  common.js               shared auth/session, sign-in dialog, API client, UI helpers
   style.css pages.css admin.css about.css
   assets/                 logo and icons
 supabase/migrations/      SQL migrations (run in the Supabase SQL editor)
+tests/frontend/           Node unit tests for frontend/auth-flows.js
 ```
 
 ## 18. Prerequisites
@@ -409,6 +527,9 @@ supabase/migrations/      SQL migrations (run in the Supabase SQL editor)
   [§15](#15-data-model)
 - API keys for Groq, Tavily and OCR.space
 - Optional: Google OAuth configured in Supabase Auth
+- For email codes: the Supabase settings in [§12](#12-authentication-and-sessions)
+- Optional, for welcome emails: an SMTP account or a Resend/Brevo API key
+- Node.js 18+ only to run the frontend unit tests
 
 ## 19. Local setup
 
@@ -425,7 +546,9 @@ Fill in `backend/.env` (see [§20](#20-environment-variables)), then run the
 migrations from [§16](#16-database-migrations) in the Supabase SQL editor.
 
 In Supabase Auth → URL configuration, add your site URL (for example
-`http://127.0.0.1:8000`) and the production URL as redirect URLs.
+`http://127.0.0.1:8000`) and the production URL as redirect URLs. For email
+codes, apply the Dashboard settings in
+[§12](#12-authentication-and-sessions).
 
 ## 20. Environment variables
 
@@ -446,6 +569,13 @@ Defined in `backend/.env` (never committed). The template is
 | `ALLOWED_ORIGINS` | no | CORS origins, only if the frontend is served elsewhere |
 | `MAX_PDF_MB` / `MAX_IMAGE_MB` / `MAX_AUDIO_MB` | no | upload limits (25 / 10 / 25) |
 | `GROQ_TIMEOUT_S` / `GROQ_MAX_RETRIES` | no | Groq request timeout and retries (60 / 2) |
+| `EMAIL_OTP_EXPIRY_S` / `EMAIL_OTP_RESEND_S` | no | countdowns in the code dialog (600 / 60). Display only: keep them equal to the Supabase settings, which are what enforce expiry and resend limits. |
+| `WELCOME_EMAIL_PROVIDER` | no | `smtp`, `resend` or `brevo`; empty disables welcome emails |
+| `EMAIL_FROM` | with a provider | sender, e.g. `Agentic AI <no-reply@your-domain.com>` |
+| `APP_PUBLIC_URL` | no | app link in the welcome email |
+| `SUPPORT_EMAIL` / `SUPPORT_URL` | no | support line in the welcome email (omitted when empty) |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USERNAME` / `SMTP_PASSWORD` | for `smtp` | SMTP server (port 587 STARTTLS or 465 SSL) |
+| `RESEND_API_KEY` / `BREVO_API_KEY` | for `resend` / `brevo` | provider API key, **secret**, backend only |
 | `OCR_SPACE_ENGINE` / `OCR_SPACE_FALLBACK_ENGINE` | no | OCR engines (2 / 3) |
 | `OCR_SPACE_LANGUAGE` / `OCR_SPACE_FALLBACK_LANGUAGE` | no | OCR language (`auto`) |
 | `OCR_MAX_ATTEMPTS` | no | attempts per page, alternating engines (4) |
@@ -474,7 +604,8 @@ The first start downloads the embedding model, so it is slower.
 
 ## 22. Frontend pages
 
-All pages share `common.js` (session, API client, user menu, toasts) and
+All pages share `auth-flows.js` (sign-in logic), `common.js` (session, sign-in
+dialog, API client, user menu, toasts) and
 `style.css` (design tokens, light/dark theme). Static assets are
 cache-busted with `?v=<version>`.
 
@@ -494,8 +625,8 @@ All endpoints except `/health`, `/config` and the HTML pages need
 | Method | Path | Description |
 |---|---|---|
 | GET | `/health` | liveness check |
-| GET | `/config` | public sign-in config (Supabase URL and publishable key) |
-| GET | `/auth/me` | current user and admin flag (`null` if the role can't be read right now) |
+| GET | `/config` | public sign-in config (Supabase URL, publishable key, email-code countdown values) |
+| GET | `/auth/me` | current user and admin flag (`null` if the role can't be read right now); queues the welcome email for a new account |
 | POST | `/chat` | non-streaming chat |
 | POST | `/chat/stream` | streaming chat (SSE: `status`, `route`, `content`, `sources`, `done`, `error`) |
 | POST | `/upload/pdf` | upload and index a PDF (`?stream=true` for NDJSON progress) |
@@ -541,10 +672,18 @@ cd backend
 python -m unittest discover -s tests -v
 ```
 
+```bash
+node --test "tests/frontend/*.test.js"
+```
+
+The second command runs from the repository root and needs Node.js 18+.
+
 | Suite | Covers |
 |---|---|
 | `tests/test_auth.py` | token verification, 401 vs 503 mapping, admin rule, `/auth/me` |
-| `tests/test_security.py` | auth on every route, IDOR protection, admin 403/503, uploads, error hiding |
+| `tests/test_security.py` | auth on every route, IDOR protection, admin 403/503 (including accounts that signed in with an email code), uploads, error hiding |
+| `tests/test_welcome_email.py` | welcome email: new password / email-code / Google accounts, no email for existing users, concurrent and repeated requests, provider failures and retries, content, provider payloads, `/auth/me` trigger |
+| `tests/frontend/auth-flows.test.js` | email code flow: request, verify, wrong and expired codes, 600 s countdown, resend and cooldown, rate limits, delivery and network errors, duplicate submissions, no codes in logs |
 | `tests/test_pdf_ocr.py` | text / scanned / mixed PDFs, OCR retries and fallbacks, partial success, rollback, page citations, upload streaming |
 | `tests/test_attachments_profile.py` | attachment ownership, profile endpoints |
 
@@ -559,6 +698,11 @@ Supabase project in `backend/.env`, so they need network access:
 
 None of them writes data. `scripts/manual/` holds optional live smoke scripts
 that call the real APIs.
+
+The email-code and welcome-email tests mock Supabase Auth and the email
+providers. Real email delivery and Supabase's real code expiry are **not**
+covered by automated tests. Check them by hand: request a code, wait past 10
+minutes, and confirm Supabase rejects it.
 
 ## 26. RAG evaluation
 
@@ -588,6 +732,10 @@ Also:
 
 - Add the Render URL to Supabase Auth → URL configuration (site URL and
   redirect URLs), and to Google OAuth if you use it.
+- Render's **free** instances block outbound SMTP (ports 25, 465 and 587), so
+  use `WELCOME_EMAIL_PROVIDER=resend` or `brevo` there, or a paid instance for
+  `smtp`. Supabase's own auth emails are sent by Supabase and aren't
+  affected.
 - Uploaded files are stored under `backend/uploads/`. Render's disk is
   ephemeral, so attach a persistent disk at that path if files must survive
   redeploys. PDF chunks live in Supabase either way.
@@ -605,6 +753,13 @@ Also:
 | "This PDF has no readable text" | the PDF has no embedded text and OCR found none (for example blank pages) |
 | Backend can't start on Windows: `mmh3` DLL blocked | Smart App Control blocks `mmh3.pyd` (a FastEmbed dependency). Allow it, or run on Linux/Render. |
 | `ValueError: GROQ_API_KEY is missing` | `backend/.env` isn't filled in |
+| "That code is incorrect or has expired" | wrong code, a code from an older email, or more than 10 minutes passed. Request a new code and use the newest email. |
+| "This code has expired" | the 10-minute countdown ran out. Click **Resend code**. |
+| "Too many attempts" / resend timer | Supabase allows one code per address every 60 seconds, and limits requests per IP. Wait and retry. |
+| The code email never arrives | check spam. Supabase's built-in sender only delivers to your project team's addresses (about 2 per hour), so configure custom SMTP in Supabase for real users. |
+| The email has a link but no code | the template lacks `{{ .Token }}`. New accounts use **Confirm signup**, existing ones **Magic Link**; update both. |
+| Codes still last an hour | "Email OTP expiration" in Supabase is still the default 3600; set it to 600. |
+| No welcome email | no provider configured, `welcome_emails` migration not run, the account existed before the migration, or the provider failed. Check the `[WELCOME]` lines in the server log and the row's `status`/`reason`. |
 
 ## 29. Known limitations
 
@@ -613,6 +768,12 @@ Also:
   needs email links opened in the same browser.
 - Server logs include user queries for debugging. Treat logs as personal data.
 - The RAG reranker is lexical, not a cross-encoder (see the Phase 14 report).
+- The app can't read Supabase's code expiry or email templates, so the
+  10-minute validity depends on the Dashboard setting in
+  [§12](#12-authentication-and-sessions).
+- The welcome email is at most once, not exactly once: a crash during sending
+  can mean none is sent. It's sent the first time the new user opens the app
+  with a confirmed email, not at the instant the account row is created.
 
 ## 30. Roadmap
 

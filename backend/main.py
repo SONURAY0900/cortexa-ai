@@ -12,7 +12,8 @@ from fastapi import (
     File,
     HTTPException,
     Depends,
-    Request
+    Request,
+    BackgroundTasks,
 )
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -38,6 +39,8 @@ from config.settings import (
     ALLOWED_ORIGINS,
     APP_ENV,
     APP_VERSION,
+    EMAIL_OTP_EXPIRY_S,
+    EMAIL_OTP_RESEND_S,
     MAX_AUDIO_MB,
     MAX_IMAGE_MB,
     MAX_PDF_MB,
@@ -48,6 +51,7 @@ from database.connection import supabase
 from rag.pipeline import IngestionError, ingest_pdf_with_summary
 from rag.retrieval.vector_store import delete_document
 from services.activity import log_activity
+from services.welcome_email import send_welcome_if_new
 from services.files import (
     FileStatus,
     FileType,
@@ -210,6 +214,11 @@ def public_config():
             "audio_mb": MAX_AUDIO_MB,
             "attachments_per_message": MAX_ATTACHMENTS,
         },
+        # Display only (countdowns). Supabase Auth enforces code expiry.
+        "email_otp": {
+            "expiry_seconds": EMAIL_OTP_EXPIRY_S,
+            "resend_seconds": EMAIL_OTP_RESEND_S,
+        },
     }
 
 
@@ -218,11 +227,16 @@ def public_config():
 # ============================================================
 
 @app.get("/auth/me")
-def get_me(user=Depends(get_current_user)):
+def get_me(background_tasks: BackgroundTasks, user=Depends(get_current_user)):
     """
     Return the currently authenticated Supabase user.
     is_admin is null when the role could not be read right now.
+
+    Every page calls this once per signed-in user, so it is also where a
+    new account's welcome email is queued (sent after the response; at
+    most once per account, see services/welcome_email.py).
     """
+    background_tasks.add_task(send_welcome_if_new, user)
     try:
         admin = is_admin(user)
     except RoleUnavailable:

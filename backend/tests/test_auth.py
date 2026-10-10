@@ -33,6 +33,10 @@ class TokenVerification(unittest.TestCase):
         sleep = mock.patch.object(supabase_auth.time, "sleep")
         sleep.start()
         self.addCleanup(sleep.stop)
+        # /auth/me queues the welcome email; keep it away from the database.
+        welcome = mock.patch.object(main, "send_welcome_if_new")
+        welcome.start()
+        self.addCleanup(welcome.stop)
 
     def patch_get_user(self, **kwargs):
         patcher = mock.patch.object(supabase_auth.supabase.auth, "get_user", **kwargs)
