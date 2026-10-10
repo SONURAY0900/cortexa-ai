@@ -1,6 +1,18 @@
-# Cortexa AI
+<h1 align="center">Cortexa AI</h1>
 
-*The AI that knows where to look.*
+<p align="center"><em>The AI that knows where to look.</em></p>
+
+<p align="center">
+  <img alt="Python 3.13" src="https://img.shields.io/badge/Python-3.13-3776AB?style=for-the-badge&logo=python&logoColor=white">
+  <img alt="FastAPI 0.141" src="https://img.shields.io/badge/FastAPI-0.141-009688?style=for-the-badge&logo=fastapi&logoColor=white">
+  <img alt="LangGraph 1.2" src="https://img.shields.io/badge/LangGraph-1.2-1C3C3C?style=for-the-badge&logo=langgraph&logoColor=white">
+  <img alt="Groq gpt-oss-120b" src="https://img.shields.io/badge/Groq-gpt--oss--120b-F55036?style=for-the-badge">
+</p>
+<p align="center">
+  <img alt="Supabase Postgres + pgvector" src="https://img.shields.io/badge/Supabase-Postgres%20%2B%20pgvector-3FCF8E?style=for-the-badge&logo=supabase&logoColor=white">
+  <img alt="OCR.space" src="https://img.shields.io/badge/OCR-OCR.space-6E56CF?style=for-the-badge">
+  <img alt="Deployed on Render" src="https://img.shields.io/badge/Deployed%20on-Render-46E3B7?style=for-the-badge&logo=render&logoColor=white">
+</p>
 
 Cortexa AI (repository `cortexa-ai`) is a multi-agent assistant that routes every question to the right source (the
 LLM itself, Wikipedia, the live web, arXiv, your uploaded PDFs or your images)
