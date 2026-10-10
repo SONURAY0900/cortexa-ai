@@ -20,47 +20,49 @@ and streams back a grounded answer with sources and page citations. It has
 voice input, saved chat history, user profiles and settings, and an admin panel
 protected by server-side roles.
 
-**Stack:** FastAPI · LangGraph / LangChain · Groq · Supabase (Auth, Postgres,
+🧩 **Stack:** FastAPI · LangGraph / LangChain · Groq · Supabase (Auth, Postgres,
 pgvector) · FastEmbed · OCR.space · plain HTML/CSS/JS frontend · Render.
 
 ---
 
-## Contents
+## 📚 Contents
 
-1. [Overview](#1-overview)
-2. [Features](#2-features)
-3. [Tech stack](#3-tech-stack)
-4. [Architecture](#4-architecture)
-5. [Chat request flow](#5-chat-request-flow)
-6. [Routing with LangGraph](#6-routing-with-langgraph)
-7. [PDF ingestion and OCR](#7-pdf-ingestion-and-ocr)
-8. [Retrieval pipeline](#8-retrieval-pipeline)
-9. [Citations](#9-citations)
-10. [Image understanding](#10-image-understanding)
-11. [Voice input](#11-voice-input)
-12. [Authentication and sessions](#12-authentication-and-sessions)
-13. [Roles and admin access](#13-roles-and-admin-access)
-14. [Security model](#14-security-model)
-15. [Data model](#15-data-model)
-16. [Database migrations](#16-database-migrations)
-17. [Project structure](#17-project-structure)
-18. [Prerequisites](#18-prerequisites)
-19. [Local setup](#19-local-setup)
-20. [Environment variables](#20-environment-variables)
-21. [Running locally](#21-running-locally)
-22. [Frontend pages](#22-frontend-pages)
-23. [API reference](#23-api-reference)
-24. [Admin panel](#24-admin-panel)
-25. [Testing](#25-testing)
-26. [RAG evaluation](#26-rag-evaluation)
-27. [Deploying on Render](#27-deploying-on-render)
-28. [Troubleshooting](#28-troubleshooting)
-29. [Known limitations](#29-known-limitations)
-30. [Roadmap](#30-roadmap)
+1. 🧭 [Overview](#1-overview)
+2. ✨ [Features](#2-features)
+3. 🧰 [Tech stack](#3-tech-stack)
+4. 🏗️ [Architecture](#4-architecture)
+5. 🔄 [Chat request flow](#5-chat-request-flow)
+6. 🔀 [Routing with LangGraph](#6-routing-with-langgraph)
+7. 📄 [PDF ingestion and OCR](#7-pdf-ingestion-and-ocr)
+8. 🔎 [Retrieval pipeline](#8-retrieval-pipeline)
+9. 📌 [Citations](#9-citations)
+10. 🖼️ [Image understanding](#10-image-understanding)
+11. 🎙️ [Voice input](#11-voice-input)
+12. 🔐 [Authentication and sessions](#12-authentication-and-sessions)
+13. 🛡️ [Roles and admin access](#13-roles-and-admin-access)
+14. 🔒 [Security model](#14-security-model)
+15. 🗃️ [Data model](#15-data-model)
+16. 🧱 [Database migrations](#16-database-migrations)
+17. 📁 [Project structure](#17-project-structure)
+18. ✅ [Prerequisites](#18-prerequisites)
+19. ⚙️ [Local setup](#19-local-setup)
+20. 🔑 [Environment variables](#20-environment-variables)
+21. ▶️ [Running locally](#21-running-locally)
+22. 🖥️ [Frontend pages](#22-frontend-pages)
+23. 📡 [API reference](#23-api-reference)
+24. 📊 [Admin panel](#24-admin-panel)
+25. 🧪 [Testing](#25-testing)
+26. 📈 [RAG evaluation](#26-rag-evaluation)
+27. 🚀 [Deploying on Render](#27-deploying-on-render)
+28. 🛠️ [Troubleshooting](#28-troubleshooting)
+29. ⚠️ [Known limitations](#29-known-limitations)
+30. 🗺️ [Roadmap](#30-roadmap)
 
 ---
 
-## 1. Overview
+<a name="1-overview"></a>
+
+## 🧭 1. Overview
 
 You type (or speak) a question, optionally attaching PDFs or images. The
 backend resolves every attachment by ID and checks that you own it. It then
@@ -75,29 +77,33 @@ The answer streams to the browser over Server-Sent Events, together with
 progress stages and sources. Conversations, messages and uploads are stored in
 Supabase per user.
 
-## 2. Features
+<a name="2-features"></a>
 
-- **Smart routing:** a structured-output LLM router picks the best tool for each
+## ✨ 2. Features
+
+- 🔀 **Smart routing:** a structured-output LLM router picks the best tool for each
   text question.
-- **Chat with your PDFs:** text PDFs, scanned PDFs (OCR) and mixed PDFs are
+- 📄 **Chat with your PDFs:** text PDFs, scanned PDFs (OCR) and mixed PDFs are
   supported. Hybrid retrieval combines dense and keyword search, and answers
   cite page numbers.
-- **Robust OCR:** per-page OCR, only for pages without embedded text. Engine
+- 🔍 **Robust OCR:** per-page OCR, only for pages without embedded text. Engine
   fallback, retries with backoff, rate-limit spacing, and partial-success
   reporting when some pages fail.
-- **Images:** OCR for text in the image and a vision model for everything else.
-- **Voice input:** Whisper transcription with optional auto-send.
-- **Streaming UI:** live stages ("Choosing the best route", "Reading text in the
+- 🖼️ **Images:** OCR for text in the image and a vision model for everything else.
+- 🎙️ **Voice input:** Whisper transcription with optional auto-send.
+- ⚡ **Streaming UI:** live stages ("Choosing the best route", "Reading text in the
   image", "Writing the answer"), sources and retry.
-- **Accounts:** password, emailed one-time code and Google sign-in through
+- 👤 **Accounts:** password, emailed one-time code and Google sign-in through
   Supabase Auth, a welcome email for new accounts, plus profile (display name)
   and settings (theme, voice language, auto-send, change password, log out
   everywhere, archive all chats).
-- **Admin panel:** dashboard, users, documents, images, activity, audit log and
+- 📊 **Admin panel:** dashboard, users, documents, images, activity, audit log and
   system health, all behind server-side role checks.
-- **Light/dark theme** and a responsive layout down to phone width.
+- 🌗 **Light/dark theme** and a responsive layout down to phone width.
 
-## 3. Tech stack
+<a name="3-tech-stack"></a>
+
+## 🧰 3. Tech stack
 
 | Layer | Technology |
 |---|---|
@@ -117,7 +123,9 @@ Supabase per user.
 
 Exact versions are pinned in [`backend/requirements.txt`](backend/requirements.txt).
 
-## 4. Architecture
+<a name="4-architecture"></a>
+
+## 🏗️ 4. Architecture
 
 ```mermaid
 flowchart LR
@@ -137,7 +145,9 @@ The browser only holds the public Supabase URL and publishable key, which it
 gets from `GET /config`. The server-side secret key, the Groq, Tavily and
 OCR.space keys, and every database write stay on the backend.
 
-## 5. Chat request flow
+<a name="5-chat-request-flow"></a>
+
+## 🔄 5. Chat request flow
 
 ```mermaid
 sequenceDiagram
@@ -161,7 +171,9 @@ sequenceDiagram
 On failure the stream ends with a generic `error` event. Internal details are
 logged on the server and never sent to the client.
 
-## 6. Routing with LangGraph
+<a name="6-routing-with-langgraph"></a>
+
+## 🔀 6. Routing with LangGraph
 
 ```mermaid
 flowchart TD
@@ -185,7 +197,9 @@ Attachments take priority (`graph/nodes.py`). Text-only questions go to the
 structured router in `graph/router.py`, which returns one of `DIRECT`,
 `WIKIPEDIA`, `TAVILY` or `ARXIV` with a short reason.
 
-## 7. PDF ingestion and OCR
+<a name="7-pdf-ingestion-and-ocr"></a>
+
+## 📄 7. PDF ingestion and OCR
 
 ```mermaid
 flowchart TD
@@ -212,7 +226,9 @@ flowchart TD
 - With `?stream=true` the upload returns NDJSON progress events (one per
   stage/page) followed by the result.
 
-## 8. Retrieval pipeline
+<a name="8-retrieval-pipeline"></a>
+
+## 🔎 8. Retrieval pipeline
 
 Implemented in `backend/rag/retrieval/` and run for every PDF question:
 
@@ -230,7 +246,9 @@ Implemented in `backend/rag/retrieval/` and run for every PDF question:
 Nothing in the pipeline is specific to any document. The embedding model and
 the 384-dimensional schema are fixed in production.
 
-## 9. Citations
+<a name="9-citations"></a>
+
+## 📌 9. Citations
 
 Every chunk stores the page it came from. The context sent to the LLM labels
 each chunk `[Source N | Page P | Chunk C]`, and the UI shows a source preview
@@ -238,21 +256,27 @@ with its page number. Pages that failed OCR are never cited, because nothing is
 stored for them. This is covered by `tests/test_pdf_ocr.py` (see
 `test_citations_carry_the_source_page`).
 
-## 10. Image understanding
+<a name="10-image-understanding"></a>
+
+## 🖼️ 10. Image understanding
 
 `POST /upload/image` stores the image (owner only). When it is attached to a
 question, the backend runs OCR for visible text and the Groq vision model for
 everything else, then answers from both. If one of them fails, the answer
 still uses the other and says so.
 
-## 11. Voice input
+<a name="11-voice-input"></a>
+
+## 🎙️ 11. Voice input
 
 The browser records audio and sends it to `POST /voice/transcribe` (Groq
 Whisper). The transcript goes into the input box. If **Send automatically** is
 on in Settings, it is sent straight away. The spoken language can be set in
 Settings or left on automatic detection.
 
-## 12. Authentication and sessions
+<a name="12-authentication-and-sessions"></a>
+
+## 🔐 12. Authentication and sessions
 
 - **Supabase Auth is the only credential store.** It handles email/password,
   Google OAuth, email confirmation and password reset. The app never stores
@@ -279,7 +303,7 @@ Settings or left on automatic detection.
 - **Logout** signs out with Supabase and clears the local session. HTML pages
   are served with `Cache-Control: no-cache`.
 
-### Sign-in methods
+### 🔑 Sign-in methods
 
 The sign-in dialog (shared by every page, admins included) offers:
 
@@ -298,7 +322,7 @@ Error messages keep problems apart: a network failure says the sign-in
 service is unreachable and is never shown as a wrong password or code, a
 `429` asks you to wait, and an email-sending failure says so.
 
-### Email code (OTP) sign-in
+### ✉️ Email code (OTP) sign-in
 
 1. Choose **Email code**, enter your email and click **Email me a code**.
 2. Supabase emails a numeric code. If the email is new, Supabase creates the
@@ -324,7 +348,7 @@ Rules:
 - A code sign-in grants nothing extra: admin access still requires the rules
   in [§13](#13-roles-and-admin-access).
 
-### Required Supabase settings
+### ⚙️ Required Supabase settings
 
 These are Dashboard settings; the app can't change or read them.
 
@@ -346,7 +370,7 @@ Example template body (works for both templates):
 <p>It expires in 10 minutes. If you didn't request it, ignore this email.</p>
 ```
 
-### Welcome email
+### 👋 Welcome email
 
 New accounts get one welcome email ("Welcome to Cortexa AI"), whether
 they signed up with a password, an email code or Google. Supabase Auth only
@@ -389,7 +413,9 @@ All providers also need `EMAIL_FROM`. Set `APP_PUBLIC_URL` for the
 **Start chatting** link, and `SUPPORT_EMAIL` or `SUPPORT_URL` to show a
 support line (left out when empty).
 
-## 13. Roles and admin access
+<a name="13-roles-and-admin-access"></a>
+
+## 🛡️ 13. Roles and admin access
 
 Admins use the **same login page** as everyone else. A request is admin only
 if **both** of these are true, checked on the backend for every `/admin/*`
@@ -429,7 +455,9 @@ The script never creates accounts or profile rows and never touches passwords.
 Migration `20261010_protect_profile_role.sql` stops anyone from changing
 `role` from the browser.
 
-## 14. Security model
+<a name="14-security-model"></a>
+
+## 🔒 14. Security model
 
 - **Every API route** except `/health` and `/config` requires a verified
   Supabase token. Admin routes also require the admin role.
@@ -459,7 +487,9 @@ Migration `20261010_protect_profile_role.sql` stops anyone from changing
 - **Errors:** unexpected errors return a generic message, and details go to the
   server log only. Logs never contain tokens or keys.
 
-## 15. Data model
+<a name="15-data-model"></a>
+
+## 🗃️ 15. Data model
 
 Tables in the `public` schema that the backend uses:
 
@@ -480,7 +510,9 @@ Tables in the `public` schema that the backend uses:
 RPCs: `match_document_chunks` (vector search) and `keyword_document_chunks`
 (keyword search).
 
-## 16. Database migrations
+<a name="16-database-migrations"></a>
+
+## 🧱 16. Database migrations
 
 SQL files in [`supabase/migrations/`](supabase/migrations/) are run once, in
 order, in the Supabase SQL editor. Each is idempotent and forward-only.
@@ -495,7 +527,9 @@ order, in the Supabase SQL editor. Each is idempotent and forward-only.
 The app runs without `20261008`, but the admin panel then shows only data
 from the core tables. Without `20261011`, no welcome email is sent.
 
-## 17. Project structure
+<a name="17-project-structure"></a>
+
+## 📁 17. Project structure
 
 ```
 backend/
@@ -534,7 +568,9 @@ supabase/migrations/      SQL migrations (run in the Supabase SQL editor)
 tests/frontend/           Node unit tests for frontend/auth-flows.js
 ```
 
-## 18. Prerequisites
+<a name="18-prerequisites"></a>
+
+## ✅ 18. Prerequisites
 
 - Python 3.13 (tested with 3.13.15)
 - A Supabase project with Auth enabled and the tables and RPCs listed in
@@ -545,7 +581,9 @@ tests/frontend/           Node unit tests for frontend/auth-flows.js
 - Optional, for welcome emails: an SMTP account or a Resend/Brevo API key
 - Node.js 18+ only to run the frontend unit tests
 
-## 19. Local setup
+<a name="19-local-setup"></a>
+
+## ⚙️ 19. Local setup
 
 ```bash
 cd backend
@@ -564,7 +602,9 @@ In Supabase Auth → URL configuration, add your site URL (for example
 codes, apply the Dashboard settings in
 [§12](#12-authentication-and-sessions).
 
-## 20. Environment variables
+<a name="20-environment-variables"></a>
+
+## 🔑 20. Environment variables
 
 Defined in `backend/.env` (never committed). The template is
 [`backend/.env.example`](backend/.env.example).
@@ -598,7 +638,9 @@ Defined in `backend/.env` (never committed). The template is
 | `OCR_SPACE_MIN_INTERVAL_S` | no | spacing between OCR requests (0.5) |
 | `OCR_RENDER_DPI` / `OCR_SPACE_MAX_UPLOAD_BYTES` | no | page rendering (150 / 1000000) |
 
-## 21. Running locally
+<a name="21-running-locally"></a>
+
+## ▶️ 21. Running locally
 
 ```bash
 cd backend
@@ -616,7 +658,9 @@ uvicorn main:app --reload
 
 The first start downloads the embedding model, so it is slower.
 
-## 22. Frontend pages
+<a name="22-frontend-pages"></a>
+
+## 🖥️ 22. Frontend pages
 
 Every page has the same header (Cortexa AI wordmark, "Powered by LangGraph ·
 Groq" badge, Chat/About, connection status, date, theme and account menu) and
@@ -636,7 +680,9 @@ cache-busted with `?v=<version>`.
 | About (`/about`) | overview, how a question is answered, routing, architecture, PDF pipeline, tech stack, security and creator |
 | Admin (`/admin`) | dashboard, users, documents, images, activity, audit log, system health |
 
-## 23. API reference
+<a name="23-api-reference"></a>
+
+## 📡 23. API reference
 
 All endpoints except `/health`, `/config` and the HTML pages need
 `Authorization: Bearer <Supabase access token>`.
@@ -671,7 +717,9 @@ All endpoints except `/health`, `/config` and the HTML pages need
 | GET | `/admin/system-health` | dependency checks |
 | GET | `/admin/settings` | non-secret configuration (environment, models, limits) |
 
-## 24. Admin panel
+<a name="24-admin-panel"></a>
+
+## 📊 24. Admin panel
 
 `/admin` loads for everyone, but its data comes only from `/admin/*`
 endpoints, and those endpoints enforce the admin rule from
@@ -684,7 +732,9 @@ endpoints, and those endpoints enforce the admin rule from
 Destructive actions ask for confirmation and are written to `admin_audit_log`.
 Statistics come from the real tables; nothing is estimated or invented.
 
-## 25. Testing
+<a name="25-testing"></a>
+
+## 🧪 25. Testing
 
 ```bash
 cd backend
@@ -723,7 +773,9 @@ providers. Real email delivery and Supabase's real code expiry are **not**
 covered by automated tests. Check them by hand: request a code, wait past 10
 minutes, and confirm Supabase rejects it.
 
-## 26. RAG evaluation
+<a name="26-rag-evaluation"></a>
+
+## 📈 26. RAG evaluation
 
 Offline evaluation tools live in `backend/rag/evaluation/`, with question
 sets in `datasets/`:
@@ -736,7 +788,9 @@ python -m rag.evaluation.evaluator --document-id <document id> --dataset my_pdf.
 [`PHASE14_REPORT.md`](backend/rag/evaluation/PHASE14_REPORT.md) records the
 embedding benchmark that led to keeping the current 384-dim model.
 
-## 27. Deploying on Render
+<a name="27-deploying-on-render"></a>
+
+## 🚀 27. Deploying on Render
 
 Create a **Web Service** (no Docker):
 
@@ -761,7 +815,9 @@ Also:
 - The first request after a deploy is slower while the embedding model
   downloads.
 
-## 28. Troubleshooting
+<a name="28-troubleshooting"></a>
+
+## 🛠️ 28. Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
@@ -780,7 +836,9 @@ Also:
 | Codes still last an hour | "Email OTP expiration" in Supabase is still the default 3600; set it to 600. |
 | No welcome email | no provider configured, `welcome_emails` migration not run, the account existed before the migration, or the provider failed. Check the `[WELCOME]` lines in the server log and the row's `status`/`reason`. |
 
-## 29. Known limitations
+<a name="29-known-limitations"></a>
+
+## ⚠️ 29. Known limitations
 
 - Uploads are stored on local disk (see [§27](#27-deploying-on-render)).
 - The browser uses Supabase's implicit OAuth flow. PKCE would be stricter but
@@ -794,7 +852,9 @@ Also:
   can mean none is sent. It's sent the first time the new user opens the app
   with a confirmed email, not at the instant the account row is created.
 
-## 30. Roadmap
+<a name="30-roadmap"></a>
+
+## 🗺️ 30. Roadmap
 
 - Switch Supabase Auth to the PKCE flow.
 - Move uploads to Supabase Storage.
