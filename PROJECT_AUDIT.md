@@ -183,3 +183,16 @@ Commits: `c91c7c6` baseline → `c675356` backend → `a5d3199` frontend/admin/c
 | E2 | **Fixed** | Git repository with `.gitignore` (secrets, uploads, venv excluded). |
 
 New: admin API + panel, activity logging migration, admin role script, security test suite, README, `.env.example`.
+
+## Final completion audit (2026-10-10)
+
+| # | Status | What changed |
+|---|---|---|
+| A1 | **Fixed** | Settings → Back sometimes looked like a logout: pages rendered the logged-out UI while a backend `/auth/me` check ran, and a failed token refresh (network/5xx) was treated as an expired session. `Auth` in `common.js` is now a single state machine (`loading` / `signed-in` / `signed-out` / `error`) with no backend call before first render, single-flight refresh, 503 kept separate from 401, Back/Forward-cache resync and a Reconnect state. |
+| A2 | **Fixed** | Backend maps Supabase 5xx/429/network errors during token verification to 503 (with `Retry-After`) instead of 401. |
+| A3 | **Fixed** | Admin = confirmed `ADMIN_EMAIL` account **and** `profiles.role = 'ADMIN'`; `app_metadata.role` ignored; role-read outage → 503; `ADMIN_PASSWORD` removed. Migration `20261010_protect_profile_role.sql` blocks role changes from the browser. |
+| A4 | **Fixed** | Groq clients had no explicit timeout (SDK default 10 min); now `GROQ_TIMEOUT_S` (60) / `GROQ_MAX_RETRIES` (2). |
+| A5 | **Fixed** | RAG/OCR/vision/search prompts state that retrieved or extracted text is untrusted and its instructions must not be followed. |
+| A6 | **Fixed** | HTML pages served with `Cache-Control: no-cache`; `/about` route; `/favicon.ico` served; asset version bumped to `1.3.3`. |
+| A7 | **Added** | Test for page citations from OCR'd / mixed PDFs through to the LLM context. |
+| A8 | Open | Supabase implicit OAuth flow kept (PKCE recommended). Server logs include user queries. |

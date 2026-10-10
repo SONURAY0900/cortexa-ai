@@ -2,6 +2,8 @@ import os
 
 from groq import Groq
 
+from config.settings import GROQ_MAX_RETRIES, GROQ_TIMEOUT_S
+
 
 SPEECH_MODEL = "whisper-large-v3-turbo"
 
@@ -26,7 +28,9 @@ def transcribe_audio(
         )
 
     client = Groq(
-        api_key=api_key
+        api_key=api_key,
+        timeout=GROQ_TIMEOUT_S,
+        max_retries=GROQ_MAX_RETRIES,
     )
 
     file_payload = (

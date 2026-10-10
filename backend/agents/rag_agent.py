@@ -1,6 +1,6 @@
 from langchain_groq import ChatGroq
 
-from config.settings import GROQ_API_KEY
+from config.settings import GROQ_API_KEY, GROQ_MAX_RETRIES, GROQ_TIMEOUT_S
 from prompts.rag_prompt import RAG_PROMPT
 from rag.retrieval.retrieval_pipeline import retrieve_context
 
@@ -8,7 +8,9 @@ from rag.retrieval.retrieval_pipeline import retrieve_context
 rag_llm = ChatGroq(
     model="openai/gpt-oss-120b",
     temperature=0.2,
-    api_key=GROQ_API_KEY
+    api_key=GROQ_API_KEY,
+    timeout=GROQ_TIMEOUT_S,
+    max_retries=GROQ_MAX_RETRIES,
 )
 
 # Characters of chunk text shown as a citation preview in the UI.

@@ -21,14 +21,23 @@ const SUGGESTIONS = [
     { route: "ARXIV", text: "Find research papers about RAG" },
 ];
 
-// Real backend ingestion stages, in order.
+// Real backend ingestion stages, in order ("ocr" carries page progress).
 const PDF_STAGE_LABELS = {
     upload: "Uploading",
-    extracting: "Extracting text",
+    extracting: "Extracting embedded text",
+    ocr: "Reading scanned pages",
     chunking: "Chunking",
     embedding: "Embedding",
     indexing: "Indexing",
 };
+
+// No byte from the processing stream for this long means the connection
+// is gone (the server sends a keep-alive line every 15 s).
+const UPLOAD_STALL_MS = 60000;
+
+function pageList(numbers) {
+    return numbers.length > 1 ? `pages ${numbers.join(", ")}` : `page ${numbers[0]}`;
+}
 
 const IMAGE_MIME = ["image/jpeg", "image/png", "image/webp", "image/bmp"];
 const IMAGE_EXT = /\.(jpe?g|png|webp|bmp)$/i;
@@ -255,6 +264,20 @@ const chat = {
 
     welcome() {
         const loggedIn = Boolean(Auth.user);
+        if (!Auth.resolved || Auth.status === "error") {
+            // Never show the logged-out screen before the session is known.
+            chat.inner.replaceChildren(el("section", { class: "hero-empty", "aria-busy": String(!Auth.resolved) }, [
+                el("div", { class: "hero-logo" }, [el("img", { src: "/frontend/assets/logo/logo.svg", width: "56", height: "56", alt: "" })]),
+                ...(Auth.status === "error" ? [
+                    el("h1", { text: "Can't reach the sign-in service" }),
+                    el("p", { text: Auth.error || MESSAGES.authUnavailable }),
+                    el("div", { class: "hero-actions" }, [
+                        el("button", { class: "btn btn-primary", type: "button", text: "Try again", onclick: () => Auth.retry() }),
+                    ]),
+                ] : [el("div", { class: "spinner", role: "status", "aria-label": "Loading" })]),
+            ]));
+            return;
+        }
         chat.inner.replaceChildren(el("section", { class: "hero-empty" }, [
             el("div", { class: "hero-logo" }, [el("img", { src: "/frontend/assets/logo/logo.svg", width: "56", height: "56", alt: "" })]),
             el("h1", { text: loggedIn ? "What can I help you with?" : "Your agentic AI assistant" }),
@@ -490,7 +513,11 @@ const sidebar = {
         const items = state.conversations.filter((c) => !needle || (c.title || "").toLowerCase().includes(needle));
 
         if (!Auth.user) {
-            list.replaceChildren(el("li", { class: "empty-note", text: "Log in to see your chats." }));
+            if (!Auth.resolved) return sidebar.skeleton();
+            list.replaceChildren(el("li", {
+                class: "empty-note",
+                text: Auth.status === "error" ? "Your chats will appear once you're reconnected." : "Log in to see your chats.",
+            }));
             return;
         }
         if (!items.length) {
@@ -660,8 +687,12 @@ const context = {
    SENDING / STREAMING
    ===================================================== */
 
+// A second click right after "Send" must not hit the button's "Stop" role.
+const STOP_ARM_DELAY_MS = 800;
+
 function setStreaming(controller) {
     state.streaming = controller;
+    state.streamStartedAt = controller ? Date.now() : 0;
     const send = $("sendButton");
     send.classList.toggle("is-stop", Boolean(controller));
     send.setAttribute("aria-label", controller ? "Stop generating" : "Send message");
@@ -684,10 +715,7 @@ async function sendMessage(text, { retry = null } = {}) {
 
     if (!query || state.streaming) return;
 
-    if (!Auth.user) {
-        AuthModal.open("login", { message: "Please log in to start chatting." });
-        return;
-    }
+    if (!Auth.requireUser("Please log in to start chatting.")) return;
 
     // A retry re-sends the same attachments; otherwise use the composer.
     const outgoing = retry ? retry.attachments : attachments.ready();
@@ -742,6 +770,7 @@ async function sendMessage(text, { retry = null } = {}) {
                 conversation_id: state.conversationId,
                 attachments: outgoing.map((a) => a.file_id),
                 context_file_ids: contextIds,
+                retry: Boolean(retry),
             },
         });
 
@@ -794,11 +823,10 @@ async function sendMessage(text, { retry = null } = {}) {
     } catch (error) {
         thinking.remove();
         if (error.name === "AbortError") {
-            if (card) {
-                card.body.classList.remove("streaming");
-                card.setText(full + "\n\n*Stopped.*");
-                card.finish(route);
-            }
+            if (!card) card = chat.addAssistant({ route });
+            card.body.classList.remove("streaming");
+            card.setText(full ? full + "\n\n*Stopped.*" : "*Stopped before an answer was generated.*");
+            card.finish(route);
         } else {
             if (!card) card = chat.addAssistant();
             card.body.classList.remove("streaming");
@@ -854,10 +882,7 @@ const attachments = {
     },
 
     add(fileList) {
-        if (!Auth.user) {
-            AuthModal.open("login", { message: "Please log in to add photos and files." });
-            return;
-        }
+        if (!Auth.requireUser("Please log in to add photos and files.")) return;
         const files = [...fileList];
         const { pdf, image, max } = attachments.limits();
         let room = max - state.attachments.length;
@@ -869,6 +894,9 @@ const attachments = {
             const limit = kind === "pdf" ? pdf : image;
             if (original.size > limit * 1024 * 1024) { Toast.error(`“${original.name}” is larger than ${limit} MB.`); continue; }
             if (room <= 0) { Toast.error(`You can attach up to ${max} files per message.`); break; }
+            const duplicate = state.attachments.find((a) => a.status !== "error" && a.name === original.name
+                && a.size === original.size && a.file.lastModified === original.lastModified);
+            if (duplicate) { Toast.info(`“${original.name}” is already attached.`); continue; }
 
             // Clipboard images often arrive as "image.png"; give them a clear, unique name.
             const file = kind === "image" && (!original.name || original.name === "image.png")
@@ -905,8 +933,10 @@ const attachments = {
             attachments.render();
         }
         if (entry.previewUrl) URL.revokeObjectURL(entry.previewUrl);
-        // Uploaded but never sent: remove it from the server too.
-        if (entry.fileId && entry.status !== "processing") {
+        // Uploaded but never sent: remove it from the server too. A PDF that
+        // is still processing is marked deleted; the server discards its
+        // document when processing finishes.
+        if (entry.fileId) {
             Api.del(`/files/${encodeURIComponent(entry.fileId)}`, undefined, { quiet: true }).catch(() => { /* best effort */ });
         }
     },
@@ -925,9 +955,25 @@ const attachments = {
 
     statusLabel(a) {
         if (a.status === "error") return a.error;
-        if (a.status === "ready") return a.kind === "pdf" ? "PDF" : "Image";
+        if (a.status === "ready") {
+            if (a.kind !== "pdf") return "Image";
+            const s = a.summary;
+            if (a.partial && s?.failed_pages?.length) return `Partly readable · ${pageList(s.failed_pages)} not searchable`;
+            return s?.pages_total ? `PDF · ${s.pages_total} page${s.pages_total === 1 ? "" : "s"}` : "PDF";
+        }
         if (a.stage === "upload") return `Uploading ${a.progress}%`;
+        if (a.stage === "ocr" && a.ocr) return `Reading scanned page ${a.ocr.current} of ${a.ocr.total} (OCR)`;
         return PDF_STAGE_LABELS[a.stage] || "Processing";
+    },
+
+    /** Upload a failed file again (same File object, fresh state). */
+    retry(localId) {
+        const entry = state.attachments.find((a) => a.localId === localId);
+        if (!entry || entry.status !== "error") return;
+        Object.assign(entry, { status: "uploading", stage: "upload", progress: 0, error: null, fileId: null,
+                               summary: null, partial: false, ocr: null, retryable: false, authRetried: false });
+        attachments.upload(entry);
+        attachments.render();
     },
 
     render() {
@@ -943,7 +989,9 @@ const attachments = {
         const existing = new Map([...tray.children].map((n) => [n.dataset.attachment, n]));
         const nodes = state.attachments.map((a) => {
             const node = existing.get(String(a.localId)) || el("div", { class: `attach-card ${a.kind}`, "data-attachment": String(a.localId) });
-            node.className = `attach-card ${a.kind} is-${a.status}`;
+            node.className = `attach-card ${a.kind} is-${a.status}${a.partial ? " is-partial" : ""}`;
+            node.title = a.summary ? `${a.summary.pages_total} page(s) · ${a.summary.pages_indexed.length} searchable`
+                + (a.summary.pages_needing_ocr ? ` · ${a.summary.pages_needing_ocr} read with OCR` : "") : "";
             const busy = a.status === "uploading" || a.status === "processing";
 
             const visual = a.kind === "image"
@@ -961,6 +1009,13 @@ const attachments = {
                 ]),
                 busy && a.stage === "upload"
                     ? el("span", { class: "attach-progress" }, [el("span", { style: `width:${a.progress}%` })])
+                    : busy ? el("span", { class: "attach-progress indeterminate" }, [el("span")]) : null,
+                a.status === "error" && a.retryable !== false
+                    ? el("button", {
+                        class: "attach-retry", type: "button", text: "Try again",
+                        "aria-label": `Upload ${a.name} again`,
+                        onclick: () => attachments.retry(a.localId),
+                    })
                     : null,
                 el("button", {
                     class: "attach-remove", type: "button",
@@ -991,12 +1046,24 @@ const attachments = {
             attachments.render();
         };
         const failMessage = isPdf ? "PDF processing failed. Please try another file." : "Image upload failed. Please try again.";
-        const fail = (message) => {
-            entry.xhr = null;
-            update({ status: "error", error: message || failMessage });
+        let stallTimer = null;
+        const finish = () => { clearTimeout(stallTimer); entry.xhr = null; };
+        const fail = (message, extra = {}) => {
+            if (entry.status === "error" || entry.status === "ready") return;
+            finish();
+            update({ status: "error", error: message || failMessage, ...extra });
         };
+        const alive = () => {
+            clearTimeout(stallTimer);
+            stallTimer = setTimeout(() => {
+                xhr.abort();
+                fail("The connection to the server was lost. Please try again.");
+            }, UPLOAD_STALL_MS);
+        };
+        alive();
 
         xhr.upload.onprogress = (event) => {
+            alive();
             if (event.lengthComputable) update({ progress: Math.round((event.loaded / event.total) * 100) });
         };
         xhr.upload.onload = () => update(isPdf ? { status: "processing", stage: "extracting", progress: 100 } : { progress: 100 });
@@ -1004,44 +1071,76 @@ const attachments = {
         let consumed = 0;
         const readEvents = () => {
             const text = xhr.responseText;
-            const lines = text.slice(consumed).split("\n");
-            const complete = text.endsWith("\n") ? lines : lines.slice(0, -1);
+            // The last element is the unfinished remainder ("" when the
+            // text ends with a newline); only the others are complete lines.
+            const complete = text.slice(consumed).split("\n").slice(0, -1);
             for (const line of complete) {
                 consumed += line.length + 1;
                 if (!line.trim()) continue;
                 let data;
                 try { data = JSON.parse(line); } catch (_) { continue; }
                 if (data.file_id) entry.fileId = data.file_id;
-                if (data.type === "stage") update({ status: "processing", stage: data.stage === "uploaded" ? "extracting" : data.stage });
-                if (data.type === "done") {
-                    entry.xhr = null;
-                    update({ status: "ready", fileId: data.file_id });
+                if (data.type === "stage") {
+                    update({
+                        status: "processing",
+                        stage: data.stage === "uploaded" ? "extracting" : data.stage,
+                        ocr: data.stage === "ocr" ? { current: data.current, total: data.total, page: data.page } : entry.ocr,
+                    });
                 }
-                if (data.type === "error") fail(data.detail);
+                if (data.type === "done") {
+                    finish();
+                    update({ status: "ready", fileId: data.file_id, summary: data.summary || null, partial: Boolean(data.partial) });
+                    if (data.partial) Toast.show(data.message || "Some pages could not be read.", "info", 9000);
+                }
+                if (data.type === "error") {
+                    const failed = data.summary?.failed_pages || [];
+                    const detail = (data.detail || failMessage)
+                        + (failed.length && data.reason === "ocr_failed" ? ` (${pageList(failed)} failed)` : "");
+                    fail(detail, { retryable: data.retryable !== false, summary: data.summary || null });
+                }
             }
         };
 
-        xhr.onprogress = () => { if (isPdf && xhr.status === 200) readEvents(); };
+        xhr.onprogress = () => {
+            alive();
+            if (isPdf && xhr.status === 200) readEvents();
+        };
 
-        xhr.onload = () => {
+        xhr.onload = async () => {
+            clearTimeout(stallTimer);
             if (xhr.status === 401) {
+                entry.xhr = null;
+                // Expired access token: refresh once and upload again.
+                const refreshed = entry.authRetried ? "invalid" : await Auth.refresh(token);
+                if (refreshed === "ok") {
+                    entry.authRetried = true;
+                    attachments.upload(entry);
+                    return;
+                }
+                if (refreshed === "unavailable") {
+                    fail(MESSAGES.authUnavailable, { retryable: true });
+                    return;
+                }
                 fail(MESSAGES.session);
-                AuthModal.open("login");
+                Auth.expire();
                 return;
             }
             if (xhr.status !== 200) {
                 let detail = null;
                 try { detail = JSON.parse(xhr.responseText).detail; } catch (_) { /* not JSON */ }
-                fail(typeof detail === "string" ? detail : failMessage);
+                const message = typeof detail === "string" ? detail
+                    : xhr.status === 503 ? "The server is busy. Please try again." : failMessage;
+                fail(message, { retryable: xhr.status >= 500 || xhr.status === 0 || xhr.status === 408 || xhr.status === 429 });
                 return;
             }
             if (isPdf) {
                 readEvents();
-                if (entry.status !== "ready" && entry.status !== "error") fail(failMessage);
+                if (entry.status !== "ready" && entry.status !== "error") fail("The upload ended before processing finished. Please try again.");
             } else {
                 try {
                     const data = JSON.parse(xhr.responseText);
-                    entry.xhr = null;
+                    if (!data?.file_id && !data?.image_id) throw new Error("malformed");
+                    finish();
                     update({ status: "ready", fileId: data.file_id || data.image_id });
                 } catch (_) {
                     fail(failMessage);
@@ -1049,6 +1148,7 @@ const attachments = {
             }
         };
         xhr.onerror = () => fail(MESSAGES.network);
+        xhr.onabort = () => clearTimeout(stallTimer);
 
         const form = new FormData();
         form.append("file", entry.file, entry.name);
@@ -1066,10 +1166,7 @@ function updateSendState() {
 function initAttachments() {
     const input = $("fileInput");
     $("attachFileButton").addEventListener("click", () => {
-        if (!Auth.user) {
-            AuthModal.open("login", { message: "Please log in to add photos and files." });
-            return;
-        }
+        if (!Auth.requireUser("Please log in to add photos and files.")) return;
         input.click();
     });
     input.addEventListener("change", () => {
@@ -1148,10 +1245,7 @@ const voice = {
     },
 
     async start() {
-        if (!Auth.user) {
-            AuthModal.open("login", { message: "Please log in to use voice input." });
-            return;
-        }
+        if (!Auth.requireUser("Please log in to use voice input.")) return;
         if (state.streaming) return;
         if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
             Toast.error("Voice input is not supported by this browser.");
@@ -1249,9 +1343,10 @@ const voice = {
 
 function applyAuthState() {
     const loggedIn = Boolean(Auth.user);
+    const signedOut = Auth.status === "signed-out";
     const input = $("userInput");
-    input.placeholder = loggedIn ? "Ask anything…" : "Log in to start chatting";
-    document.body.classList.toggle("logged-out", !loggedIn);
+    input.placeholder = signedOut ? "Log in to start chatting" : "Ask anything…";
+    document.body.classList.toggle("logged-out", signedOut);
 
     if (!loggedIn) {
         state.conversationId = null;
@@ -1280,8 +1375,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
     $("composer").addEventListener("submit", (event) => {
         event.preventDefault();
-        if (state.streaming) state.streaming.abort();
-        else sendMessage();
+        if (!state.streaming) sendMessage();
+        else if (Date.now() - state.streamStartedAt > STOP_ARM_DELAY_MS) state.streaming.abort();
     });
 
     input.addEventListener("keydown", (event) => {
@@ -1292,7 +1387,7 @@ document.addEventListener("DOMContentLoaded", () => {
     });
     input.addEventListener("input", autoGrow);
     input.addEventListener("focus", () => {
-        if (!Auth.user && Auth.resolved) AuthModal.open("login", { message: "Please log in to start chatting." });
+        if (Auth.status === "signed-out") AuthModal.open("login", { message: "Please log in to start chatting." });
     });
 
     $("voiceButton").addEventListener("click", () => {

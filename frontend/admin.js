@@ -46,6 +46,13 @@ function showGate(kind) {
             el("p", { text: "Sign in with your administrator account to continue." }),
             el("button", { class: "btn btn-primary", type: "button", text: "Log in", onclick: () => AuthModal.open("login") }),
         );
+    } else if (kind === "unavailable") {
+        card.append(
+            el("div", { class: "gate-icon", html: ICONS.info }),
+            el("h1", { text: "Can't check your access right now" }),
+            el("p", { text: "The server couldn't verify your session. Your account is fine; please try again." }),
+            el("button", { class: "btn btn-primary", type: "button", text: "Try again", onclick: () => (Auth.status === "error" ? Auth.retry() : checkAccess()) }),
+        );
     } else {
         card.append(
             el("div", { class: "gate-icon danger", html: ICONS.alert }),
@@ -58,16 +65,18 @@ function showGate(kind) {
 }
 
 async function checkAccess() {
+    if (!Auth.resolved) return showGate("checking");
+    if (Auth.status === "error") return showGate("unavailable");
     if (!Auth.user) return showGate("login");
     showGate("checking");
     try {
-        await Api.get("/admin/me", { quiet: true });
+        await Api.get("/admin/me");
         gate().hidden = true;
         document.getElementById("adminNav").hidden = false;
         view().hidden = false;
         route();
     } catch (error) {
-        showGate(error.status === 401 ? "login" : "forbidden");
+        showGate(error.status === 401 ? "login" : error.status === 403 ? "forbidden" : "unavailable");
     }
 }
 

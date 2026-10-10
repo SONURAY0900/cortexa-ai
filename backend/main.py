@@ -33,7 +33,7 @@ from agents.speech_agent import speech_to_text_agent
 
 from account.routes import router as account_router
 from admin.routes import router as admin_router
-from auth.supabase_auth import get_current_user, is_admin
+from auth.supabase_auth import RoleUnavailable, get_current_user, is_admin
 from config.settings import (
     ALLOWED_ORIGINS,
     APP_ENV,
@@ -45,7 +45,8 @@ from config.settings import (
     SUPABASE_URL,
 )
 from database.connection import supabase
-from rag.pipeline import ingest_pdf
+from rag.pipeline import IngestionError, ingest_pdf_with_summary
+from rag.retrieval.vector_store import delete_document
 from services.activity import log_activity
 from services.files import (
     FileStatus,
@@ -145,25 +146,44 @@ app.mount(
 )
 
 
+def _page(name: str) -> FileResponse:
+    # Revalidate HTML on every visit so a deploy's new ?v= asset URLs are
+    # picked up. (no-cache, not no-store: Back/Forward caching still works.)
+    return FileResponse(FRONTEND_DIR / name, headers={"Cache-Control": "no-cache"})
+
+
 @app.get("/")
 def home():
-    return FileResponse(FRONTEND_DIR / "index.html")
+    return _page("index.html")
 
 
 # Static pages; every API call they make is authorized server-side.
 @app.get("/admin")
 def admin_page():
-    return FileResponse(FRONTEND_DIR / "admin.html")
+    return _page("admin.html")
 
 
 @app.get("/profile")
 def profile_page():
-    return FileResponse(FRONTEND_DIR / "profile.html")
+    return _page("profile.html")
 
 
 @app.get("/settings")
 def settings_page():
-    return FileResponse(FRONTEND_DIR / "settings.html")
+    return _page("settings.html")
+
+
+@app.get("/about")
+def about_page():
+    return _page("about.html")
+
+
+# Browsers probe /favicon.ico even with <link rel="icon">; serve the logo
+# instead of logging a 404 on every page view.
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    return FileResponse(FRONTEND_DIR / "assets" / "logo" / "logo.svg", media_type="image/svg+xml",
+                        headers={"Cache-Control": "public, max-age=86400"})
 
 
 # ============================================================
@@ -201,14 +221,20 @@ def public_config():
 def get_me(user=Depends(get_current_user)):
     """
     Return the currently authenticated Supabase user.
+    is_admin is null when the role could not be read right now.
     """
+    try:
+        admin = is_admin(user)
+    except RoleUnavailable:
+        admin = None
+
     return {
         "success": True,
         "user": {
             "id": user.id,
             "email": user.email,
             "created_at": user.created_at,
-            "is_admin": is_admin(user),
+            "is_admin": admin,
         }
     }
 
@@ -236,6 +262,10 @@ class ChatRequest(BaseModel):
     # Legacy single-attachment fields (still accepted).
     document_id: str | None = None
     image_id: str | None = None
+
+    # True when the client re-sends a question whose answer failed; the
+    # stored, unanswered question is reused instead of saved again.
+    retry: bool = False
 
 
 @dataclass
@@ -386,6 +416,22 @@ def _save_message(
     }).execute()
 
     return result.data[0]["id"] if result.data else None
+
+
+def _unanswered_question_id(conversation_id: str, user, query: str) -> str | None:
+    """ID of the conversation's last message if it is this same, unanswered user question."""
+    try:
+        rows = (
+            supabase.table("messages").select("id,role,content")
+            .eq("conversation_id", conversation_id).eq("user_id", _user_id(user))
+            .order("created_at", desc=True).limit(1).execute().data
+        )
+    except Exception as e:
+        log_agent("DATABASE", f"Retry lookup failed: {e}")
+        return None
+    if rows and str(rows[0].get("role")).upper() == "USER" and rows[0].get("content") == query:
+        return rows[0]["id"]
+    return None
 
 
 def _set_message_route(message_id: str | None, route: str) -> None:
@@ -551,11 +597,47 @@ async def _read_upload(file: UploadFile, max_mb: int, kind: str) -> bytes:
 
 PDF_STAGE_LABELS = {
     "uploaded": "Uploaded",
-    "extracting": "Extracting text",
+    "extracting": "Extracting embedded text",
+    "ocr": "Reading scanned pages (OCR)",
     "chunking": "Chunking",
     "embedding": "Creating embeddings",
     "indexing": "Indexing",
 }
+
+# User-facing messages per IngestionError.reason (no internals).
+PDF_FAILURE_MESSAGES = {
+    "ocr_failed": "We couldn't read the scanned pages of this PDF because the text-recognition service "
+                  "kept failing. Please try again in a few minutes.",
+    "no_text": "This PDF has no readable text. If it is a scan, try a clearer copy.",
+    "indexing_failed": "The PDF was read, but saving it for search failed. Please try again.",
+    "invalid_pdf": "This PDF could not be opened. Please try another file.",
+    "cancelled": "The upload was removed.",
+}
+PDF_FAILURE_DEFAULT = "PDF processing failed. Please try another file."
+
+# Seconds between keep-alive lines while a long step (OCR) runs, so the
+# client and any proxy keep the stream open.
+PDF_HEARTBEAT_S = 15
+
+
+def _file_was_deleted(file_id: str) -> bool:
+    try:
+        rows = supabase.table("files").select("status").eq("id", file_id).limit(1).execute().data
+        return bool(rows) and rows[0].get("status") == FileStatus.DELETED
+    except Exception:
+        return False
+
+
+def _pdf_result_message(summary: dict) -> str:
+    failed = summary.get("failed_pages") or []
+    if summary.get("partial") and failed:
+        pages = ", ".join(str(n) for n in failed)
+        plural = len(failed) > 1
+        return (
+            f"PDF processed with missing pages: page{'s' if plural else ''} {pages} "
+            f"could not be read and {'are' if plural else 'is'} not searchable."
+        )
+    return "PDF uploaded and processed successfully."
 
 
 @app.post("/upload/pdf")
@@ -567,8 +649,19 @@ async def upload_pdf(
     """
     Upload a PDF and process it through the RAG pipeline.
 
+    The result always carries a processing summary (pages, OCR results,
+    failed pages, chunks, indexed). Outcomes:
+
+      success   every page with text indexed            files.status PROCESSED
+      partial   some pages unreadable, the rest indexed  files.status PROCESSED,
+                                                         summary.partial = true
+      failure   nothing searchable                       files.status FAILED (422)
+
+    The summary is also stored in files.metadata["processing"].
+
     With ?stream=true the response is newline-delimited JSON with the
-    real ingestion stages followed by a final "done" or "error" event.
+    real ingestion stages (including per-page OCR progress), keep-alive
+    lines, and a final "done" or "error" event.
     """
 
     original_filename = safe_display_name(file.filename)
@@ -597,9 +690,10 @@ async def upload_pdf(
     file_id = file_row["id"]
     log_agent("PDF", f"Received {original_filename} ({len(content)} bytes) as file {file_id}")
 
-    def run_ingestion(progress=None) -> str:
+    def run_ingestion(progress=None) -> dict:
+        """Returns the success payload, or raises IngestionError."""
         try:
-            document_id = ingest_pdf(
+            document_id, summary = ingest_pdf_with_summary(
                 file_path=str(file_path),
                 filename=original_filename,
                 user_id=user_id,
@@ -607,32 +701,57 @@ async def upload_pdf(
                 file_id=file_id,
             )
         except Exception as e:
-            log_agent("PDF", f"PDF processing failed: {e!r}")
+            error = e if isinstance(e, IngestionError) else IngestionError("unknown", repr(e))
+            if error.reason == "cancelled":
+                raise error
+            log_agent("PDF", f"PDF processing failed ({error.reason}): {error} | summary={error.summary}")
             delete_stored_file(str(file_path))
-            set_file_status(file_id, FileStatus.FAILED)
-            log_activity(user_id, "PDF_UPLOAD_FAILED", original_filename, "FAILED", file_name=original_filename)
-            raise
-        set_file_status(file_id, FileStatus.PROCESSED)
-        log_agent("PDF", f"PDF ingestion completed: {document_id}")
-        return document_id
+            set_file_status(file_id, FileStatus.FAILED, {"processing": {**error.summary, "reason": error.reason}})
+            log_activity(user_id, "PDF_UPLOAD_FAILED", original_filename, "FAILED", file_name=original_filename,
+                         metadata={"reason": error.reason, "failed_pages": error.summary.get("failed_pages", [])})
+            raise error
 
-    def success_payload(document_id: str) -> dict:
+        if _file_was_deleted(file_id):
+            # The user removed the attachment while it was processing.
+            delete_document(document_id)
+            delete_stored_file(str(file_path))
+            log_agent("PDF", f"File {file_id} was removed during processing; document discarded.")
+            raise IngestionError("cancelled", "Upload was removed during processing.", summary)
+
+        set_file_status(file_id, FileStatus.PROCESSED, {"processing": summary})
+        if summary["partial"]:
+            log_activity(user_id, "PDF_OCR_PARTIAL", original_filename, "FAILED", document_id=document_id,
+                         file_name=original_filename, metadata={"failed_pages": summary["failed_pages"]})
+        log_agent(
+            "PDF",
+            f"PDF ingestion completed: {document_id} "
+            + (f"(partial: pages {summary['failed_pages']} unreadable)" if summary["partial"] else "(all pages)"),
+        )
         return {
             "success": True,
-            "message": "PDF uploaded and processed successfully.",
+            "partial": summary["partial"],
+            "message": _pdf_result_message(summary),
             "file_id": file_id,
             "document_id": document_id,
             "filename": original_filename,
             "file_size": len(content),
+            "summary": summary,
         }
 
-    failure_message = "PDF processing failed. Please try another file."
+    def failure_payload(error: IngestionError) -> dict:
+        return {
+            "detail": PDF_FAILURE_MESSAGES.get(error.reason, PDF_FAILURE_DEFAULT),
+            "reason": error.reason,
+            "retryable": error.reason in ("ocr_failed", "indexing_failed"),
+            "file_id": file_id,
+            "summary": error.summary,
+        }
 
     if not stream:
         try:
-            return success_payload(run_ingestion())
-        except Exception:
-            raise HTTPException(status_code=422, detail=failure_message)
+            return run_ingestion()
+        except IngestionError as error:
+            return JSONResponse(status_code=422, content=failure_payload(error))
 
     events: queue.Queue = queue.Queue()
 
@@ -640,15 +759,22 @@ async def upload_pdf(
         def progress(stage, details=None):
             events.put({"type": "stage", "stage": stage, "label": PDF_STAGE_LABELS.get(stage, stage), **(details or {})})
         try:
-            events.put({"type": "done", **success_payload(run_ingestion(progress))})
-        except Exception:
-            events.put({"type": "error", "detail": failure_message})
+            events.put({"type": "done", **run_ingestion(progress)})
+        except IngestionError as error:
+            events.put({"type": "error", **failure_payload(error)})
+        except Exception as e:      # never leave the client waiting
+            log_agent("PDF", f"Unexpected ingestion error: {e!r}")
+            events.put({"type": "error", "detail": PDF_FAILURE_DEFAULT, "reason": "unknown", "retryable": True})
 
     def event_stream():
         yield json.dumps({"type": "stage", "stage": "uploaded", "label": PDF_STAGE_LABELS["uploaded"], "file_id": file_id}) + "\n"
         threading.Thread(target=worker, daemon=True).start()
         while True:
-            event = events.get()
+            try:
+                event = events.get(timeout=PDF_HEARTBEAT_S)
+            except queue.Empty:
+                yield json.dumps({"type": "heartbeat"}) + "\n"
+                continue
             yield json.dumps(event) + "\n"
             if event["type"] in ("done", "error"):
                 break
@@ -1130,13 +1256,20 @@ def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
 
     current_history = _get_conversation_history(conversation_id, user)
 
-    user_message_id = _save_message(
-        conversation_id,
-        user,
-        "USER",
-        query,
-        metadata=_message_metadata(plan, request),
-    )
+    user_message_id = _unanswered_question_id(conversation_id, user, query) if request.retry else None
+
+    if user_message_id:
+        # The history already ends with this question; don't repeat it to the LLM.
+        if current_history and current_history[-1]["role"] == "user" and current_history[-1]["content"] == query:
+            current_history = current_history[:-1]
+    else:
+        user_message_id = _save_message(
+            conversation_id,
+            user,
+            "USER",
+            query,
+            metadata=_message_metadata(plan, request),
+        )
 
     def generate():
 

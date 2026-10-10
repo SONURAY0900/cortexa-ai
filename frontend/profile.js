@@ -142,16 +142,23 @@ function renderProfile(p) {
     content().replaceChildren(hero, edit, account, usageSection || "");
 }
 
+function profileError(message, onRetry) {
+    content().replaceChildren(el("section", { class: "card-section" }, [el("div", { class: "card-body table-error" }, [
+        el("span", { text: message }),
+        el("button", { class: "btn btn-outline btn-sm", type: "button", text: "Try again", onclick: onRetry }),
+    ])]));
+}
+
 async function loadProfile() {
+    if (!Auth.resolved) return profileSkeleton();
+    if (Auth.status === "error") return profileError(Auth.error || MESSAGES.authUnavailable, () => Auth.retry());
     if (!Auth.user) return profileGate();
     profileSkeleton();
     try {
         renderProfile(await Api.get("/profile/me"));
     } catch (error) {
-        content().replaceChildren(el("section", { class: "card-section" }, [el("div", { class: "card-body table-error" }, [
-            el("span", { text: "We couldn't load your profile." }),
-            el("button", { class: "btn btn-outline btn-sm", type: "button", text: "Try again", onclick: loadProfile }),
-        ])]));
+        if (error.status === 401) return profileGate();   // session really expired
+        profileError(error.status === 503 ? error.message : "We couldn't load your profile.", loadProfile);
     }
 }
 

@@ -19,6 +19,7 @@ const MESSAGES = {
     session: "Your session has expired. Please log in again.",
     forbidden: "You do not have permission to access this page.",
     generic: "Something went wrong. Please try again.",
+    authUnavailable: "We couldn't reach the sign-in service. Your session is safe; please try again.",
 };
 
 
@@ -339,10 +340,16 @@ const Auth = {
     client: null,
     session: null,
     user: null,
-    isAdmin: false,
+    /** "loading" until the stored session is read, then "signed-in",
+     *  "signed-out", or "error" (sign-in service unreachable; the stored
+     *  session is untouched and the user is NOT treated as logged out). */
+    status: "loading",
+    error: null,
     ready: null,
     listeners: new Set(),
     config: null,
+
+    get resolved() { return Auth.status !== "loading"; },
 
     onChange(fn) {
         Auth.listeners.add(fn);
@@ -358,7 +365,8 @@ const Auth = {
     loadScript() {
         return new Promise((resolve, reject) => {
             if (window.supabase?.createClient) return resolve();
-            const script = el("script", { src: SUPABASE_JS_URL, integrity: SUPABASE_JS_SRI, crossorigin: "anonymous" });
+            document.getElementById("supabaseScript")?.remove();   // a failed earlier attempt
+            const script = el("script", { id: "supabaseScript", src: SUPABASE_JS_URL, integrity: SUPABASE_JS_SRI, crossorigin: "anonymous" });
             script.onload = resolve;
             script.onerror = () => reject(new Error("Unable to load the sign-in service."));
             document.head.append(script);
@@ -367,69 +375,117 @@ const Auth = {
 
     init() {
         Auth.ready = (async () => {
-            try {
-                const [config] = await Promise.all([
-                    fetch("/config").then((r) => {
-                        if (!r.ok) throw new Error("config");
-                        return r.json();
-                    }),
-                    Auth.loadScript(),
-                ]);
-                Auth.config = config;
-
-                if (!config.supabase_url || !config.supabase_publishable_key) {
-                    throw new Error("Sign-in is not configured on the server.");
-                }
-
-                Auth.client = window.supabase.createClient(config.supabase_url, config.supabase_publishable_key);
-
-                Auth.client.auth.onAuthStateChange((event, session) => {
-                    if (event === "PASSWORD_RECOVERY") {
-                        setTimeout(() => AuthModal.open("reset"), 50);
+            // Transient failures (offline, slow CDN, server restarting) are
+            // retried; they must never look like a sign-out.
+            for (let attempt = 0; ; attempt++) {
+                try {
+                    await Auth.connect();
+                    return;
+                } catch (error) {
+                    console.error("Auth init failed:", error);
+                    if (error.fatal || attempt >= 2) {
+                        Auth.fail(error.fatal ? error.message : MESSAGES.authUnavailable);
+                        return;
                     }
-                    // Defer: Supabase recommends not awaiting inside this callback.
-                    setTimeout(() => Auth.setSession(session), 0);
-                });
-
-                const { data } = await Auth.client.auth.getSession();
-                await Auth.setSession(data.session);
-
-                const params = new URLSearchParams(window.location.search);
-                if (params.get("reset") === "1") {
-                    window.history.replaceState({}, document.title, window.location.pathname);
-                    AuthModal.open("reset");
+                    await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt));
                 }
-            } catch (error) {
-                console.error("Auth init failed:", error);
-                Toast.error(error.message === "config" ? MESSAGES.network : error.message);
-                Auth.emit();
             }
         })();
         return Auth.ready;
     },
 
-    async setSession(session) {
+    async connect() {
+        if (!Auth.client) {
+            const [config] = await Promise.all([
+                Auth.config || fetch("/config").then((r) => {
+                    if (!r.ok) throw new Error("config");
+                    return r.json();
+                }),
+                Auth.loadScript(),
+            ]);
+            Auth.config = config;
+
+            if (!config.supabase_url || !config.supabase_publishable_key) {
+                throw Object.assign(new Error("Sign-in is not configured on the server."), { fatal: true });
+            }
+
+            Auth.client = window.supabase.createClient(config.supabase_url, config.supabase_publishable_key);
+
+            Auth.client.auth.onAuthStateChange((event, session) => {
+                if (event === "PASSWORD_RECOVERY") {
+                    setTimeout(() => AuthModal.open("reset"), 50);
+                }
+                // Defer: Supabase recommends not awaiting inside this callback.
+                setTimeout(() => Auth.setSession(session, event), 0);
+            });
+        }
+
+        // Reads the session saved in this browser (refreshing it if needed).
+        // No backend round trip: the first render must not wait on the API.
+        const { data } = await Auth.client.auth.getSession();
+        Auth.setSession(data.session);
+        Auth.cleanUrl();
+    },
+
+    /** Drop leftovers of a sign-in redirect so they never sit in history. */
+    cleanUrl() {
+        const params = new URLSearchParams(window.location.search);
+        const hash = new URLSearchParams(window.location.hash.slice(1));
+        const oauthError = hash.get("error_description") || params.get("error_description");
+
+        if (oauthError) Toast.error("Sign-in didn't complete. Please try again.");
+
+        if (params.get("reset") === "1") {
+            AuthModal.open("reset");
+        }
+        if (params.has("reset") || params.has("error_description") || hash.has("access_token") || hash.has("error_description")) {
+            window.history.replaceState(window.history.state, document.title, window.location.pathname);
+        }
+    },
+
+    fail(message) {
+        Auth.status = "error";
+        Auth.error = message;
+        UserMenu.render();
+        Auth.emit();
+    },
+
+    /** Called from the "Try again" buttons shown while in the error state. */
+    retry() {
+        if (Auth.status !== "error") return Auth.ready;
+        Auth.status = "loading";
+        Auth.error = null;
+        UserMenu.render();
+        Auth.emit();
+        return Auth.init();
+    },
+
+    setSession(session, event = "") {
         const previousId = Auth.user?.id || null;
+        const previousStatus = Auth.status;
         Auth.session = session || null;
         Auth.user = session?.user || null;
+        Auth.status = Auth.user ? "signed-in" : "signed-out";
+        Auth.error = null;
 
-        if (Auth.user && Auth.user.id !== previousId) {
-            try {
-                const me = await Api.get("/auth/me", { quiet: true });
-                Auth.isAdmin = Boolean(me?.user?.is_admin);
-            } catch (_) {
-                Auth.isAdmin = false;
-            }
-        }
-        if (!Auth.user) Auth.isAdmin = false;
-
-        const firstResolution = !Auth.resolved;
-        Auth.resolved = true;
-
-        if (firstResolution || (Auth.user?.id || null) !== previousId) {
+        // Pages reload their data only when the signed-in identity changes,
+        // not on every token refresh.
+        if (previousStatus !== Auth.status || (Auth.user?.id || null) !== previousId) {
             UserMenu.render();
             Auth.emit();
+        } else if (event === "USER_UPDATED") {
+            UserMenu.render();
         }
+    },
+
+    /** True if signed in. Otherwise explains why not (still checking,
+     *  service unreachable, or signed out) and returns false. */
+    requireUser(message = "Please log in to continue.") {
+        if (Auth.user) return true;
+        if (Auth.status === "loading") Toast.info("Checking your sign-in…");
+        else if (Auth.status === "error") Toast.error(Auth.error || MESSAGES.authUnavailable);
+        else AuthModal.open("login", { message });
+        return false;
     },
 
     async token() {
@@ -439,16 +495,76 @@ const Auth = {
         return data.session?.access_token || null;
     },
 
+    /** Network problems and 5xx/429 from the auth server are not a verdict
+     *  on the session. */
+    retryable(error) {
+        if (!error) return false;
+        return error.name === "AuthRetryableFetchError" || error instanceof TypeError
+            || error.status === 0 || error.status === 429 || error.status >= 500;
+    },
+
+    /**
+     * Get a fresh access token after `usedToken` was rejected. Resolves to
+     * "ok", "invalid" (the session is really over) or "unavailable" (could
+     * not reach the auth server; the session is kept and the caller should
+     * show a temporary error).
+     *
+     * At most one refresh per rejected token: concurrent callers share the
+     * request in flight, and callers whose 401 arrives just after it
+     * settled reuse its result instead of refreshing again.
+     */
+    async refresh(usedToken = null) {
+        if (!Auth.client || !Auth.session) return "invalid";
+
+        const current = await Auth.token();
+        if (usedToken && current && current !== usedToken) return "ok";   // already refreshed
+
+        const last = Auth._lastRefresh;
+        if (last && last.token === usedToken && Date.now() - last.at < 5000) return last.result;
+
+        Auth._refreshing ||= Auth.client.auth.refreshSession()
+            .then(({ data, error }) => {
+                if (!error && data?.session) return "ok";
+                return Auth.retryable(error) ? "unavailable" : "invalid";
+            })
+            .catch((error) => (Auth.retryable(error) ? "unavailable" : "invalid"))
+            .then((result) => {
+                Auth._lastRefresh = { token: usedToken, result, at: Date.now() };
+                return result;
+            })
+            .finally(() => { Auth._refreshing = null; });
+        return Auth._refreshing;
+    },
+
+    /** The server rejected the session even after a refresh. */
+    async expire() {
+        if (!Auth.user) return;   // several requests may hit this at once
+        Auth.setSession(null);
+        try { await Auth.client?.auth.signOut({ scope: "local" }); } catch (_) { /* already gone */ }
+        AuthModal.open("login", { message: MESSAGES.session });
+    },
+
     async logout() {
         try {
             await Auth.client?.auth.signOut();
         } catch (error) {
+            // The server call failed; still clear this browser's session.
             console.error(error);
+            try { await Auth.client?.auth.signOut({ scope: "local" }); } catch (_) { /* already gone */ }
         }
-        await Auth.setSession(null);
+        Auth.setSession(null);
         Toast.info("You have been logged out.");
     },
 };
+
+// Back/Forward can restore a page from the browser's memory cache with
+// the auth state it had when the user left. Re-read the stored session so
+// a sign-in or sign-out made on another page is reflected.
+window.addEventListener("pageshow", (event) => {
+    if (!event.persisted) return;
+    if (Auth.client) Auth.client.auth.getSession().then(({ data }) => Auth.setSession(data.session)).catch(() => {});
+    else if (Auth.status === "error") Auth.retry();
+});
 
 
 /* =====================================================
@@ -463,11 +579,25 @@ class ApiError extends Error {
 }
 
 const Api = {
-    async request(path, { method = "GET", json, body, headers = {}, quiet = false, signal, raw = false } = {}) {
+    /**
+     * Authenticated fetch with consistent error handling:
+     * - 401: refresh the Supabase session once and retry; only if the
+     *   refresh is rejected is the session treated as expired (signed out
+     *   locally). If the auth server can't be reached the session is kept
+     *   and a temporary (503) error is raised instead.
+     * - 403: "no permission" error; the session is kept.
+     * - 503 / network errors on GET: one short retry (transient outages);
+     *   the session is kept.
+     */
+    async request(path, options = {}) {
+        const { method = "GET", json, body, headers = {}, quiet = false, signal, raw = false, _attempt = 0 } = options;
         const token = await Auth.token();
         const finalHeaders = { ...headers };
         if (token) finalHeaders.Authorization = `Bearer ${token}`;
         if (json !== undefined) finalHeaders["Content-Type"] = "application/json";
+
+        const retry = (delay) => new Promise((resolve) => setTimeout(resolve, delay))
+            .then(() => Api.request(path, { ...options, _attempt: _attempt + 1 }));
 
         let response;
         try {
@@ -479,6 +609,7 @@ const Api = {
             });
         } catch (error) {
             if (error.name === "AbortError") throw error;
+            if (method === "GET" && _attempt === 0) return retry(800);
             throw new ApiError(MESSAGES.network, 0);
         }
 
@@ -490,12 +621,18 @@ const Api = {
         if (!response.ok) {
             let message = data?.detail;
             if (typeof message !== "string") message = null;
+
             if (response.status === 401) {
-                message = MESSAGES.session;
-                if (!quiet && Auth.user) {
-                    await Auth.setSession(null);
-                    AuthModal.open("login");
+                if (token && _attempt === 0) {
+                    const refreshed = await Auth.refresh(token);
+                    if (refreshed === "ok") return Api.request(path, { ...options, _attempt: 1 });
+                    if (refreshed === "unavailable") throw new ApiError(MESSAGES.authUnavailable, 503);
                 }
+                message = MESSAGES.session;
+                if (!quiet && Auth.user) await Auth.expire();
+            } else if (response.status === 503) {
+                if (method === "GET" && _attempt === 0) return retry(1500);
+                message = message || MESSAGES.generic;
             } else if (response.status === 403 && !message) {
                 message = MESSAGES.forbidden;
             } else if (response.status >= 500 && !message) {
@@ -507,6 +644,7 @@ const Api = {
     },
     get: (path, options) => Api.request(path, { ...options, method: "GET" }),
     post: (path, json, options) => Api.request(path, { ...options, method: "POST", json }),
+    patch: (path, json, options) => Api.request(path, { ...options, method: "PATCH", json }),
     del: (path, json, options) => Api.request(path, { ...options, method: "DELETE", json }),
 };
 
@@ -687,6 +825,19 @@ const UserMenu = {
         slot.replaceChildren();
         UserMenu.listeners?.abort();
 
+        if (Auth.status === "loading") {
+            slot.append(el("span", { class: "avatar-circle skeleton", role: "status", "aria-label": "Checking sign-in" }));
+            return;
+        }
+        if (Auth.status === "error") {
+            slot.append(el("button", {
+                class: "btn btn-outline btn-sm",
+                type: "button",
+                text: "Reconnect",
+                onclick: () => Auth.retry(),
+            }));
+            return;
+        }
         if (!Auth.user) {
             slot.append(el("button", {
                 class: "btn btn-primary btn-sm",

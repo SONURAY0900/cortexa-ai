@@ -75,9 +75,16 @@ def create_file(
     return result.data[0]
 
 
-def set_file_status(file_id: str, status: str) -> None:
+def set_file_status(file_id: str, status: str, metadata: dict | None = None) -> None:
+    """
+    Update files.status (and, if given, replace files.metadata, e.g. the
+    PDF processing summary). Failures are logged, never raised.
+    """
+    values = {"status": status}
+    if metadata is not None:
+        values["metadata"] = metadata
     try:
-        supabase.table("files").update({"status": status}).eq("id", file_id).execute()
+        supabase.table("files").update(values).eq("id", file_id).execute()
     except Exception as e:
         log_agent("DATABASE", f"File status update failed: {e}")
 

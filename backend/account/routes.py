@@ -3,8 +3,8 @@ Signed-in user's own account: profile (public.profiles + Supabase Auth)
 and usage counts taken from existing tables.
 
 Users can change their display name only. The role is never accepted
-from the client (the request model forbids unknown fields) and admin
-rights stay in app_metadata, which only the server key can write.
+from the client (the request model forbids unknown fields) and is never
+written by this module; see auth.supabase_auth.is_admin.
 """
 
 from datetime import datetime, timezone
@@ -74,7 +74,7 @@ def _profile_payload(user, row: dict | None, available: bool, include_usage: boo
         "email": user.email,
         "full_name": (row or {}).get("full_name") or _metadata_name(user),
         "avatar_url": (row or {}).get("avatar_url") or _metadata_avatar(user),
-        "role": "ADMIN" if is_admin(user) else "USER",
+        "role": "ADMIN" if is_admin(user, role=(row or {}).get("role") or "USER") else "USER",
         "provider": app_meta.get("provider", "email"),
         "providers": app_meta.get("providers") or [app_meta.get("provider", "email")],
         "created_at": user.created_at,

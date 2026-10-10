@@ -1,13 +1,15 @@
 from langchain_groq import ChatGroq
 
-from config.settings import GROQ_API_KEY
+from config.settings import GROQ_API_KEY, GROQ_MAX_RETRIES, GROQ_TIMEOUT_S
 from prompts.llm_prompt import LLM_PROMPT
 from utils.logger import log_agent
 
 llm = ChatGroq(
     model="openai/gpt-oss-120b",
     temperature=0.2,
-    api_key=GROQ_API_KEY
+    api_key=GROQ_API_KEY,
+    timeout=GROQ_TIMEOUT_S,
+    max_retries=GROQ_MAX_RETRIES,
 )
 
 

@@ -4,6 +4,8 @@ import os
 
 from groq import Groq
 
+from config.settings import GROQ_MAX_RETRIES, GROQ_TIMEOUT_S
+
 
 VISION_MODEL = "qwen/qwen3.8-27b"
 
@@ -50,7 +52,9 @@ def analyze_image(
     )
 
     client = Groq(
-        api_key=api_key
+        api_key=api_key,
+        timeout=GROQ_TIMEOUT_S,
+        max_retries=GROQ_MAX_RETRIES,
     )
 
     response = client.chat.completions.create(

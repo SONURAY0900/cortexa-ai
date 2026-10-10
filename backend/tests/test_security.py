@@ -13,10 +13,12 @@ import io
 import unittest
 import uuid
 from types import SimpleNamespace
+from unittest import mock
 
 from fastapi.testclient import TestClient
 
 import main
+from auth import supabase_auth
 from auth.supabase_auth import get_current_user, is_admin
 from config import settings
 from services.storage import UPLOAD_ROOT, resolve_inside_uploads
@@ -125,28 +127,61 @@ class AdminAuthorization(Base):
                 self.assertEqual(self.call(method, path).status_code, 403)
 
     def test_admin_email_without_role_is_not_admin(self):
+        self.profile_role("USER")
         self.login_as(make_user(email=ADMIN_EMAIL))
         self.assertEqual(self.client.get("/admin/me").status_code, 403)
 
+    def profile_role(self, role):
+        patcher = mock.patch.object(supabase_auth, "_profile_role", return_value=role)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_role_without_allowlisted_email_is_not_admin(self):
-        self.login_as(make_user(email="attacker@example.com", role="admin"))
+        self.profile_role("ADMIN")
+        self.login_as(make_user(email="attacker@example.com"))
         self.assertEqual(self.client.get("/admin/me").status_code, 403)
 
     def test_unconfirmed_admin_is_not_admin(self):
-        self.login_as(make_user(email=ADMIN_EMAIL, role="admin", confirmed=False))
+        self.profile_role("ADMIN")
+        self.login_as(make_user(email=ADMIN_EMAIL, confirmed=False))
+        self.assertEqual(self.client.get("/admin/me").status_code, 403)
+
+    def test_legacy_app_metadata_role_is_ignored(self):
+        self.profile_role("USER")
+        self.login_as(make_user(email=ADMIN_EMAIL, role="admin"))
+        self.assertEqual(self.client.get("/admin/me").status_code, 403)
+
+    def test_missing_profile_is_not_admin(self):
+        self.profile_role(None)
+        self.login_as(make_user(email=ADMIN_EMAIL))
+        self.assertEqual(self.client.get("/admin/me").status_code, 403)
+
+    def test_role_lookup_outage_is_503_not_403(self):
+        if not settings.ADMIN_EMAILS:
+            self.skipTest("ADMIN_EMAIL not configured")
+        patcher = mock.patch.object(supabase_auth, "_profile_role", side_effect=supabase_auth.RoleUnavailable())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.login_as(make_user(email=ADMIN_EMAIL))
+        self.assertEqual(self.client.get("/admin/me").status_code, 503)
+        # A normal user is refused without ever needing the role lookup.
+        self.login_as(make_user())
         self.assertEqual(self.client.get("/admin/me").status_code, 403)
 
     def test_real_admin_is_accepted(self):
         if not settings.ADMIN_EMAILS:
             self.skipTest("ADMIN_EMAIL not configured")
-        self.login_as(make_user(email=ADMIN_EMAIL.upper(), role="admin"))
+        self.profile_role("ADMIN")
+        self.login_as(make_user(email=ADMIN_EMAIL.upper()))
         self.assertEqual(self.client.get("/admin/me").status_code, 200)
 
     def test_is_admin_rules(self):
+        self.profile_role(None)                                     # no profile row
         self.assertFalse(is_admin(make_user()))
         self.assertFalse(is_admin(make_user(email=ADMIN_EMAIL)))
         if settings.ADMIN_EMAILS:
-            self.assertTrue(is_admin(make_user(email=ADMIN_EMAIL, role="admin")))
+            self.assertTrue(is_admin(make_user(email=ADMIN_EMAIL), role="ADMIN"))
+            self.assertFalse(is_admin(make_user(email=ADMIN_EMAIL), role="USER"))
 
 
 class UploadValidation(Base):

@@ -3,7 +3,7 @@ Admin API.
 
 Every route depends on get_current_admin, so authorization is enforced
 server-side for each request (valid Supabase session + ADMIN_EMAIL
-allowlist + app_metadata.role == "admin").
+allowlist + public.profiles.role == "ADMIN"; see auth.supabase_auth).
 
 Only data that the application actually stores is returned:
 
@@ -102,8 +102,18 @@ def _iso(value) -> str | None:
     return parsed.isoformat() if parsed else None
 
 
+def _profile_roles() -> dict[str, str]:
+    try:
+        rows = supabase.table("profiles").select("id,role").eq("role", "ADMIN").execute().data or []
+    except Exception as e:
+        log_agent("ADMIN", f"Profile roles unavailable: {e}")
+        return {}
+    return {str(r["id"]): r["role"] for r in rows}
+
+
 def _auth_users() -> list[dict]:
     users, page = [], 1
+    roles = _profile_roles()
 
     while True:
         batch = supabase.auth.admin.list_users(page=page, per_page=200)
@@ -121,7 +131,7 @@ def _auth_users() -> list[dict]:
                 "created_at": _iso(u.created_at),
                 "last_sign_in_at": _iso(getattr(u, "last_sign_in_at", None)),
                 "status": status,
-                "role": "ADMIN" if is_admin(u) else "USER",
+                "role": "ADMIN" if is_admin(u, role=roles.get(str(u.id), "USER")) else "USER",
                 "provider": (u.app_metadata or {}).get("provider", "email"),
             })
         if len(batch) < 200:

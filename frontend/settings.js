@@ -210,9 +210,29 @@ function layout(sections) {
     content().replaceChildren(el("div", { class: "settings-layout" }, [nav, el("div", {}, sections.filter(Boolean))]));
 }
 
+function accountPlaceholder() {
+    return section("account", "Account", null, [el("div", { class: "card-body" }, [
+        el("span", { class: "skeleton skeleton-line", style: "width:60%" }),
+        el("span", { class: "skeleton skeleton-line", style: "width:40%" }),
+    ])], 120);
+}
+
 async function loadSettings() {
     const local = [appearanceSection(), voiceSection()];
 
+    if (!Auth.resolved) {
+        layout([...local, accountPlaceholder()]);
+        return;
+    }
+    if (Auth.status === "error") {
+        layout([...local, section("account", "Account", null, [
+            el("div", { class: "card-body table-error" }, [
+                el("span", { text: Auth.error || MESSAGES.authUnavailable }),
+                el("button", { class: "btn btn-outline btn-sm", type: "button", text: "Try again", onclick: () => Auth.retry() }),
+            ]),
+        ], 120)]);
+        return;
+    }
     if (!Auth.user) {
         layout([...local, section("account", "Account", null, [
             el("div", { class: "card-body" }, [
@@ -223,23 +243,22 @@ async function loadSettings() {
         return;
     }
 
-    const loading = section("account", "Account", null, [el("div", { class: "card-body" }, [
-        el("span", { class: "skeleton skeleton-line", style: "width:60%" }),
-        el("span", { class: "skeleton skeleton-line", style: "width:40%" }),
-    ])], 120);
+    const loading = accountPlaceholder();
     layout([...local, loading]);
 
     try {
         const profile = await Api.get("/profile/me");
         layout([...local, accountSection(profile), securitySection(profile), dataSection()]);
-    } catch (_) {
+    } catch (error) {
+        if (error.status === 401) return;   // session really expired: the login dialog is already open
         loading.querySelector(".card-body").replaceChildren(el("div", { class: "table-error" }, [
-            el("span", { text: "We couldn't load your account settings." }),
+            el("span", { text: error.status === 503 ? error.message : "We couldn't load your account settings." }),
             el("button", { class: "btn btn-outline btn-sm", type: "button", text: "Try again", onclick: loadSettings }),
         ]));
     }
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+    loadSettings();
     Auth.onChange(loadSettings);
 });

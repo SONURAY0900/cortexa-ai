@@ -18,8 +18,10 @@ tavily-python==0.8.4
 arxiv==4.0.1
 requests==2.34.2
 
-# Supabase (Postgres + pgvector + Auth)
+# Supabase (Postgres + pgvector + Auth); httpx is used directly for its
+# thread-safe HTTP/1.1 connection pool (see database/connection.py)
 supabase==2.32.0
+httpx==0.28.1
 
 # PDF processing / OCR / images
 pypdf==6.19.0

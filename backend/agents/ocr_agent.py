@@ -1,6 +1,6 @@
 from langchain_groq import ChatGroq
 
-from config.settings import GROQ_API_KEY
+from config.settings import GROQ_API_KEY, GROQ_MAX_RETRIES, GROQ_TIMEOUT_S
 from prompts.ocr_prompt import OCR_PROMPT
 from tools.ocr_tool import extract_text_from_image
 
@@ -8,7 +8,9 @@ from tools.ocr_tool import extract_text_from_image
 ocr_llm = ChatGroq(
     model="openai/gpt-oss-120b",
     temperature=0.2,
-    api_key=GROQ_API_KEY
+    api_key=GROQ_API_KEY,
+    timeout=GROQ_TIMEOUT_S,
+    max_retries=GROQ_MAX_RETRIES,
 )
 
 
