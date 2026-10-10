@@ -12,6 +12,7 @@
   <img alt="Supabase Postgres + pgvector" src="https://img.shields.io/badge/Supabase-Postgres%20%2B%20pgvector-3FCF8E?style=for-the-badge&logo=supabase&logoColor=white">
   <img alt="OCR.space" src="https://img.shields.io/badge/OCR-OCR.space-6E56CF?style=for-the-badge">
   <img alt="Deployed on Render" src="https://img.shields.io/badge/Deployed%20on-Render-46E3B7?style=for-the-badge&logo=render&logoColor=white">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-22C55E?style=for-the-badge"></a>
 </p>
 
 Cortexa AI (repository `cortexa-ai`) is a multi-agent assistant that routes every question to the right source (the
@@ -861,3 +862,9 @@ Also:
 - Add an automated browser test suite (Playwright) for the auth and session
   flows.
 - Add query logging levels so production logs can omit user content.
+
+---
+
+## 📜 License
+
+Released under the [MIT License](LICENSE). © 2026 Sonu Ray.
