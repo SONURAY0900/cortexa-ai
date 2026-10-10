@@ -803,6 +803,23 @@ const AuthModal = {
 
 const UserMenu = {
     listeners: null,
+    /** { userId, isAdmin } from /auth/me. Only decides whether the Admin
+     *  link is shown; every /admin request is still checked by the server. */
+    admin: null,
+
+    /** Ask the server once per signed-in user whether they are an admin. */
+    async checkAdmin(userId) {
+        UserMenu.admin = { userId, isAdmin: false };
+        try {
+            const data = await Api.get("/auth/me", { quiet: true });
+            if (Auth.user?.id !== userId) return;
+            UserMenu.admin = { userId, isAdmin: data?.user?.is_admin === true };
+            if (UserMenu.admin.isAdmin) UserMenu.render();
+        } catch (_) {
+            // Unknown right now: ask again on the next render.
+            if (UserMenu.admin?.userId === userId) UserMenu.admin = null;
+        }
+    },
 
     avatar(user, size = "") {
         const meta = user?.user_metadata || {};
@@ -853,11 +870,17 @@ const UserMenu = {
         const name = meta.full_name || meta.name || "";
         const icon = (path) => `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
 
+        if (UserMenu.admin?.userId !== Auth.user.id) UserMenu.checkAdmin(Auth.user.id);
+        const showAdmin = UserMenu.admin?.userId === Auth.user.id && UserMenu.admin.isAdmin;
+
         const menu = el("div", { class: "menu", role: "menu", hidden: true }, [
             el("div", { class: "menu-header" }, [
                 name ? el("div", { class: "menu-name", text: name }) : null,
                 el("div", { class: "menu-email", text: email }),
             ]),
+            showAdmin ? el("a", { class: "menu-item", href: "/admin", role: "menuitem" }, [
+                el("span", { html: icon('<path d="M12 2 4 5v6c0 5 3.4 9.3 8 11 4.6-1.7 8-6 8-11V5z"/>') }), "Admin panel",
+            ]) : null,
             el("a", { class: "menu-item", href: "/profile", role: "menuitem" }, [
                 el("span", { html: icon('<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>') }), "Profile",
             ]),
