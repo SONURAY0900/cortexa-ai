@@ -1,5 +1,5 @@
 /* =====================================================
-   Agentic AI — shared frontend runtime (all pages)
+   Cortexa AI — shared frontend runtime (all pages)
 
    - Theme, animated background, backend status
    - Supabase Auth (config served by the backend)
@@ -167,10 +167,11 @@ function initBackground() {
     function resize() {
         w = canvas.width = window.innerWidth;
         h = canvas.height = window.innerHeight;
-        const count = Math.min(window.innerWidth < 700 ? 28 : 60, Math.floor((w * h) / 22000));
+        const count = Math.min(window.innerWidth < 700 ? 60 : 140, Math.floor((w * h) / 7000));
         points = Array.from({ length: count }, () => ({
             x: Math.random() * w, y: Math.random() * h,
-            vx: (Math.random() - 0.5) * 0.3, vy: (Math.random() - 0.5) * 0.3,
+            vx: (Math.random() - 0.5) * 0.45, vy: (Math.random() - 0.5) * 0.45,
+            r: 1 + Math.random() * 1.4,
         }));
     }
 
@@ -186,17 +187,19 @@ function initBackground() {
                 if (p.x < 0 || p.x > w) p.vx *= -1;
                 if (p.y < 0 || p.y > h) p.vy *= -1;
                 ctx.beginPath();
-                ctx.arc(p.x, p.y, 1.5, 0, Math.PI * 2);
-                ctx.fillStyle = `rgba(${color},0.5)`;
+                ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+                ctx.fillStyle = `rgba(${color},0.65)`;
                 ctx.fill();
                 for (let j = i + 1; j < points.length; j++) {
                     const q = points[j];
-                    const d = Math.hypot(p.x - q.x, p.y - q.y);
+                    const dx = p.x - q.x, dy = p.y - q.y;
+                    if (dx > 120 || dx < -120 || dy > 120 || dy < -120) continue;
+                    const d = Math.hypot(dx, dy);
                     if (d < 120) {
                         ctx.beginPath();
                         ctx.moveTo(p.x, p.y);
                         ctx.lineTo(q.x, q.y);
-                        ctx.strokeStyle = `rgba(${color},${0.14 * (1 - d / 120)})`;
+                        ctx.strokeStyle = `rgba(${color},${0.2 * (1 - d / 120)})`;
                         ctx.lineWidth = 1;
                         ctx.stroke();
                     }
@@ -1073,6 +1076,14 @@ const UserMenu = {
    BACKEND STATUS
    ===================================================== */
 
+function initHeaderDate() {
+    const node = document.getElementById("headerDate");
+    if (!node) return;
+    const now = new Date();
+    node.dateTime = now.toISOString().slice(0, 10);
+    node.textContent = now.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
 function initStatus() {
     const status = document.getElementById("status");
     const text = document.getElementById("statusText");
@@ -1084,7 +1095,7 @@ function initStatus() {
             const response = await fetch("/health", { cache: "no-store" });
             if (!response.ok) throw new Error();
             status.className = "status online";
-            text.textContent = "Online";
+            text.textContent = "Connected";
         } catch (_) {
             status.className = "status offline";
             text.textContent = "Offline";
@@ -1104,6 +1115,7 @@ document.addEventListener("DOMContentLoaded", () => {
     initBackground();
     Theme.init();
     initStatus();
+    initHeaderDate();
     UserMenu.render();
     Auth.init();
 });

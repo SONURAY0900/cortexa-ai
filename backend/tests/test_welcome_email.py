@@ -110,7 +110,7 @@ class WhoGetsOne(Base):
         self.assertEqual(we.send_welcome_if_new(user), "sent")
         self.assertEqual(len(self.sent), 1)
         self.assertEqual(self.sent[0].to, user.email)
-        self.assertEqual(self.sent[0].subject, "Welcome to Agentic AI ChatBot")
+        self.assertEqual(self.sent[0].subject, "Welcome to Cortexa AI")
         self.assertEqual(self.store.rows[user.id]["status"], "SENT")
 
     def test_new_email_code_account(self):
@@ -291,7 +291,7 @@ class ProviderFailures(Base):
         logged = out.getvalue()
         self.assertIn("WELCOME", logged)
         self.assertNotIn("private.person", logged)
-        self.assertNotIn("Welcome to Agentic AI ChatBot", logged)
+        self.assertNotIn("Welcome to Cortexa AI", logged)
 
 
 class Content(unittest.TestCase):

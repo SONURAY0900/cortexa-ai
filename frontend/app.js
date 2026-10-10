@@ -1,5 +1,5 @@
 /* =====================================================
-   Agentic AI — chat page
+   Cortexa AI — chat page
    Depends on common.js (Auth, Api, Toast, Modal, Prefs, el, …)
    ===================================================== */
 
@@ -280,7 +280,7 @@ const chat = {
         }
         chat.inner.replaceChildren(el("section", { class: "hero-empty" }, [
             el("div", { class: "hero-logo" }, [el("img", { src: "/frontend/assets/logo/logo.svg", width: "56", height: "56", alt: "" })]),
-            el("h1", { text: loggedIn ? "What can I help you with?" : "Your agentic AI assistant" }),
+            el("h1", { text: loggedIn ? "What can I help you with?" : "Meet Cortexa AI" }),
             el("p", {
                 text: loggedIn
                     ? "I pick the right tool for every question — web search, Wikipedia, research papers, your PDFs or images."

@@ -1,6 +1,8 @@
-# Agentic AI Chatbot (LangGraph)
+# Cortexa AI
 
-A multi-tool AI assistant that routes every question to the right source (the
+*The AI that knows where to look.*
+
+Cortexa AI (repository `cortexa-ai`) is a multi-agent assistant that routes every question to the right source (the
 LLM itself, Wikipedia, the live web, arXiv, your uploaded PDFs or your images)
 and streams back a grounded answer with sources and page citations. It has
 voice input, saved chat history, user profiles and settings, and an admin panel
@@ -328,13 +330,13 @@ Example template body (works for both templates):
 
 ```html
 <h2>Your sign-in code</h2>
-<p>Enter this code in Agentic AI ChatBot: <strong>{{ .Token }}</strong></p>
+<p>Enter this code in Cortexa AI: <strong>{{ .Token }}</strong></p>
 <p>It expires in 10 minutes. If you didn't request it, ignore this email.</p>
 ```
 
 ### Welcome email
 
-New accounts get one welcome email ("Welcome to Agentic AI ChatBot"), whether
+New accounts get one welcome email ("Welcome to Cortexa AI"), whether
 they signed up with a password, an email code or Google. Supabase Auth only
 sends its own auth emails, so the backend sends this one through the provider
 you configure (`WELCOME_EMAIL_PROVIDER`). With no provider configured, no
@@ -571,7 +573,7 @@ Defined in `backend/.env` (never committed). The template is
 | `GROQ_TIMEOUT_S` / `GROQ_MAX_RETRIES` | no | Groq request timeout and retries (60 / 2) |
 | `EMAIL_OTP_EXPIRY_S` / `EMAIL_OTP_RESEND_S` | no | countdowns in the code dialog (600 / 60). Display only: keep them equal to the Supabase settings, which are what enforce expiry and resend limits. |
 | `WELCOME_EMAIL_PROVIDER` | no | `smtp`, `resend` or `brevo`; empty disables welcome emails |
-| `EMAIL_FROM` | with a provider | sender, e.g. `Agentic AI <no-reply@your-domain.com>` |
+| `EMAIL_FROM` | with a provider | sender, e.g. `Cortexa AI <no-reply@your-domain.com>` |
 | `APP_PUBLIC_URL` | no | app link in the welcome email |
 | `SUPPORT_EMAIL` / `SUPPORT_URL` | no | support line in the welcome email (omitted when empty) |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USERNAME` / `SMTP_PASSWORD` | for `smtp` | SMTP server (port 587 STARTTLS or 465 SSL) |
@@ -604,6 +606,11 @@ The first start downloads the embedding model, so it is slower.
 
 ## 22. Frontend pages
 
+Every page has the same header (Cortexa AI wordmark, "Powered by LangGraph ·
+Groq" badge, Chat/About, connection status, date, theme and account menu) and
+footer (AI-accuracy notice and "Made by Sonu Ray"). The badge, date and
+footer side texts are hidden on narrow screens.
+
 All pages share `auth-flows.js` (sign-in logic), `common.js` (session, sign-in
 dialog, API client, user menu, toasts) and
 `style.css` (design tokens, light/dark theme). Static assets are
@@ -614,7 +621,7 @@ cache-busted with `?v=<version>`.
 | Chat (`/`) | conversation sidebar, streaming answers, attachments (PDF/image), voice, sources, retry |
 | Profile (`/profile`) | display name, account details, usage counts |
 | Settings (`/settings`) | theme, voice language and auto-send, sign-in method, change password, log out everywhere, archive all chats |
-| About (`/about`) | how the assistant works |
+| About (`/about`) | overview, how a question is answered, routing, architecture, PDF pipeline, tech stack, security and creator |
 | Admin (`/admin`) | dashboard, users, documents, images, activity, audit log, system health |
 
 ## 23. API reference

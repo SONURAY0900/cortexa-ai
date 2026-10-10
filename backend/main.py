@@ -83,8 +83,8 @@ from utils.logger import log_agent
 IS_PRODUCTION = APP_ENV.lower() == "production"
 
 app = FastAPI(
-    title="LangGraph AI Chatbot",
-    description="Full-stack AI chatbot using LangGraph, LangChain and Groq",
+    title="Cortexa AI",
+    description="Cortexa AI: multi-agent assistant built with LangGraph, LangChain and Groq",
     version=APP_VERSION,
     # Interactive API docs are disabled in production.
     docs_url=None if IS_PRODUCTION else "/docs",

@@ -51,7 +51,7 @@ from utils.logger import log_agent
 
 
 TABLE = "welcome_emails"
-SUBJECT = "Welcome to Agentic AI ChatBot"
+SUBJECT = "Welcome to Cortexa AI"
 PROVIDERS = ("smtp", "resend", "brevo")
 
 MAX_ATTEMPTS = 3
@@ -116,7 +116,7 @@ def build_email(user) -> Email:
     text_lines = [
         greeting,
         "",
-        "Welcome to Agentic AI ChatBot, an AI assistant that chooses the right tool for every question.",
+        "Welcome to Cortexa AI, a multi-agent AI assistant that chooses the right tool for every question.",
         "",
         "What you can do:",
         *[f"- {title}: {body}" for title, body in FEATURES],
@@ -155,10 +155,10 @@ def build_email(user) -> Email:
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f1f5f9;">
 <tr><td align="center" style="padding:24px 12px;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:12px;font-family:Segoe UI,Helvetica,Arial,sans-serif;">
-<tr><td style="padding:32px 28px 8px 28px;font-size:22px;line-height:28px;font-weight:700;color:#0f172a;">Welcome to Agentic AI ChatBot</td></tr>
+<tr><td style="padding:32px 28px 8px 28px;font-size:22px;line-height:28px;font-weight:700;color:#0f172a;">Welcome to Cortexa AI</td></tr>
 <tr><td style="padding:8px 28px 0 28px;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
-<tr><td style="padding:0 0 16px 0;font-size:15px;line-height:22px;color:#334155;">{html.escape(greeting)}<br><br>Thanks for joining. Agentic AI ChatBot is an AI assistant that chooses the right tool for every question.</td></tr>
+<tr><td style="padding:0 0 16px 0;font-size:15px;line-height:22px;color:#334155;">{html.escape(greeting)}<br><br>Thanks for joining. Cortexa AI is a multi-agent AI assistant that chooses the right tool for every question.</td></tr>
 {feature_rows}
 {button}
 {support_row}

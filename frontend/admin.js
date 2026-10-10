@@ -1,5 +1,5 @@
 /* =====================================================
-   Agentic AI — admin panel
+   Cortexa AI — admin panel
    Depends on common.js. Every request goes to /admin/*,
    which the backend authorizes on each call.
    ===================================================== */

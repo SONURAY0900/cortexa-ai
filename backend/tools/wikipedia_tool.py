@@ -15,7 +15,7 @@ def search_wikipedia(query: str) -> dict:
         }
 
         headers = {
-            "User-Agent": "AgenticAIChatbot/1.0"
+            "User-Agent": "CortexaAI/1.0"
         }
 
         response = requests.get(

@@ -1,5 +1,5 @@
 /* =====================================================
-   Agentic AI — profile page
+   Cortexa AI — profile page
    Data: GET/PATCH /profile/me (Supabase Auth + public.profiles)
    ===================================================== */
 

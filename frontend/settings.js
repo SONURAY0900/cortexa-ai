@@ -1,5 +1,5 @@
 /* =====================================================
-   Agentic AI — settings page
+   Cortexa AI — settings page
    Every control here is backed by a working feature:
    - Appearance / Voice: saved on this device (Prefs)
    - Password, sign-out everywhere: Supabase Auth
