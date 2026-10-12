@@ -1,7 +1,15 @@
 from fastembed import TextEmbedding
 
 
-MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+# English-focused 384-d model, chosen to fit 512 MB hosting (~200 MB
+# loaded). Changing the model requires re-embedding stored chunks:
+# python -m scripts.reindex_embeddings --apply
+MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+
+# Chunks embedded per batch. FastEmbed's default (256) briefly needs
+# gigabytes of memory on large PDFs; small batches keep the peak low
+# without changing the vectors.
+BATCH_SIZE = 32
 
 embedding_model = TextEmbedding(
     model_name=MODEL_NAME
@@ -31,7 +39,7 @@ def generate_embeddings(texts: list[str]) -> list[list[float]]:
     if not texts:
         return []
 
-    vectors = embedding_model.embed(texts)
+    vectors = embedding_model.embed(texts, batch_size=BATCH_SIZE)
 
     return [
         vector.tolist()

@@ -202,7 +202,7 @@
                         <li>Extract embedded text page by page (pypdf, PyMuPDF).</li>
                         <li>Send only pages without text to OCR.space, with retries and an engine fallback.</li>
                         <li>Clean the text and split each page into overlapping chunks.</li>
-                        <li>Embed chunks with FastEmbed (multilingual, 384 dimensions).</li>
+                        <li>Embed chunks with FastEmbed (all-MiniLM-L6-v2, 384 dimensions).</li>
                         <li>Store chunks with their page numbers in Postgres + pgvector.</li>
                     </ol>
                 </div>
@@ -252,7 +252,7 @@
                 <div class="card">
                     <h3>RAG and documents</h3>
                     <ul>
-                        <li><strong>FastEmbed</strong> multilingual MiniLM embeddings (384-d)</li>
+                        <li><strong>FastEmbed</strong> all-MiniLM-L6-v2 embeddings (384-d)</li>
                         <li><strong>pgvector</strong> vector search</li>
                         <li><strong>pypdf, PyMuPDF</strong> PDF text and page rendering</li>
                         <li><strong>OCR.space</strong> scanned pages and images</li>

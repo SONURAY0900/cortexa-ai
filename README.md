@@ -114,7 +114,7 @@ Supabase per user.
 | Vision | Groq `qwen/qwen3.8-27b` |
 | Speech | Groq `whisper-large-v3-turbo` |
 | Search tools | Tavily, Wikipedia API, arXiv |
-| Embeddings | FastEmbed `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` (384 dimensions) |
+| Embeddings | FastEmbed `sentence-transformers/all-MiniLM-L6-v2` (384 dimensions, English-focused; chosen to fit 512 MB hosting) |
 | Vector store | Supabase Postgres + pgvector |
 | Auth | Supabase Auth (supabase-js 2.117.3 in the browser, pinned with SRI) |
 | OCR | OCR.space (engines 2 and 3) |
@@ -244,8 +244,15 @@ Implemented in `backend/rag/retrieval/` and run for every PDF question:
 5. **Context build:** adds neighbouring chunks (window 1), at most 8 to 10
    chunks or 6,000 characters, ordered by document position.
 
-Nothing in the pipeline is specific to any document. The embedding model and
-the 384-dimensional schema are fixed in production.
+Nothing in the pipeline is specific to any document. The schema is fixed at
+384 dimensions. Changing the embedding model means re-embedding every stored
+chunk once:
+
+```bash
+cd backend
+python -m scripts.reindex_embeddings            # counts only, changes nothing
+python -m scripts.reindex_embeddings --apply    # rewrites document_chunks.embedding
+```
 
 <a name="9-citations"></a>
 
@@ -787,7 +794,11 @@ python -m rag.evaluation.evaluator --document-id <document id> --dataset my_pdf.
 ```
 
 [`PHASE14_REPORT.md`](backend/rag/evaluation/PHASE14_REPORT.md) records the
-embedding benchmark that led to keeping the current 384-dim model.
+multilingual embedding benchmark. The model was later switched to
+`all-MiniLM-L6-v2` so the app fits 512 MB hosting. On the same six evaluation
+documents (full pipeline, recall@5): English stayed level (0.75 → 0.76 on
+average), Hindi fell (0.76 → 0.58), and Odia stayed poor with either model
+(0.11 → 0.13).
 
 <a name="27-deploying-on-render"></a>
 
@@ -815,6 +826,10 @@ Also:
   redeploys. PDF chunks live in Supabase either way.
 - The first request after a deploy is slower while the embedding model
   downloads.
+- **Memory:** with `all-MiniLM-L6-v2` the app uses about 280 MB after start and
+  peaked at about 420 MB while embedding 300 chunks (measured on Windows), so
+  Render's free 512 MB instance is enough. Chunks are embedded 32 at a time
+  to keep that peak low.
 
 <a name="28-troubleshooting"></a>
 
@@ -846,6 +861,9 @@ Also:
   needs email links opened in the same browser.
 - Server logs include user queries for debugging. Treat logs as personal data.
 - The RAG reranker is lexical, not a cross-encoder (see the Phase 14 report).
+- The embedding model is English-focused, chosen to fit 512 MB hosting. Hindi
+  and Odia PDFs retrieve noticeably worse; a 2 GB instance with
+  `multilingual-e5-small` would be the upgrade path (see the Phase 14 report).
 - The app can't read Supabase's code expiry or email templates, so the
   10-minute validity depends on the Dashboard setting in
   [§12](#12-authentication-and-sessions).
