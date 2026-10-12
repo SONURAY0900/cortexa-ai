@@ -1089,20 +1089,28 @@ function initStatus() {
     const text = document.getElementById("statusText");
     if (!status) return;
 
+    // A single failed check is common right after a deploy or while a
+    // sleeping server wakes up, so retry quickly before showing "Offline".
+    let failures = 0;
+    let timer = null;
+
     const check = async () => {
+        clearTimeout(timer);
         if (document.hidden) return;
         try {
             const response = await fetch("/health", { cache: "no-store" });
             if (!response.ok) throw new Error();
+            failures = 0;
             status.className = "status online";
             text.textContent = "Connected";
         } catch (_) {
-            status.className = "status offline";
-            text.textContent = "Offline";
+            failures += 1;
+            status.className = failures < 3 ? "status" : "status offline";
+            text.textContent = failures < 3 ? "Connecting…" : "Offline";
         }
+        timer = setTimeout(check, failures ? Math.min(30000, 2000 * 2 ** (failures - 1)) : 30000);
     };
     check();
-    setInterval(check, 30000);
     document.addEventListener("visibilitychange", () => { if (!document.hidden) check(); });
 }
 
