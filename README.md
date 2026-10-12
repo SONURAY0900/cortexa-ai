@@ -170,7 +170,20 @@ sequenceDiagram
 ```
 
 On failure the stream ends with a generic `error` event. Internal details are
-logged on the server and never sent to the client.
+logged on the server and never sent to the client. If Groq's rate limit is hit
+(the free tier allows about 8,000 tokens per minute, roughly 3 PDF questions),
+the message says the AI service is busy and to try again in a few seconds.
+
+**PDF questions use one LLM call.** The server retrieves the relevant chunks,
+then streams an answer from the grounded PDF prompt (answer only from the
+retrieved pages, otherwise say it isn't in the PDF). The general-purpose
+answer prompt is not used for PDFs, so it can't add outside knowledge.
+
+**Follow-up questions.** The last 6 messages are passed to the PDF prompt so
+"explain that again" is understood, but only as context, never as a source of
+facts. A short question that refers back ("and what is its time complexity?")
+is searched together with the previous user question, because on its own it
+has no topic words to search for.
 
 <a name="6-routing-with-langgraph"></a>
 
@@ -531,6 +544,7 @@ order, in the Supabase SQL editor. Each is idempotent and forward-only.
 | `20261009_profiles_backend_access.sql` | lets the backend role read and write `profiles` |
 | `20261010_protect_profile_role.sql` | trigger: `profiles.role` can't be changed (or set to anything but `USER` on insert) except by trusted server roles |
 | `20261011_welcome_emails.sql` | `welcome_emails` table (RLS on, no policies) and a `SKIPPED` row for every existing account |
+| `20261012_chunk_and_file_indexes.sql` | indexes on `document_chunks (document_id, chunk_index)` and `files (user_id)` for PDF search and per-user file lookups |
 
 The app runs without `20261008`, but the admin panel then shows only data
 from the core tables. Without `20261011`, no welcome email is sent.
@@ -762,6 +776,7 @@ The second command runs from the repository root and needs Node.js 18+.
 | `tests/test_welcome_email.py` | welcome email: new password / email-code / Google accounts, no email for existing users, concurrent and repeated requests, provider failures and retries, content, provider payloads, `/auth/me` trigger |
 | `tests/frontend/auth-flows.test.js` | email code flow: request, verify, wrong and expired codes, 600 s countdown, resend and cooldown, rate limits, delivery and network errors, duplicate submissions, no codes in logs |
 | `tests/test_pdf_ocr.py` | text / scanned / mixed PDFs, OCR retries and fallbacks, partial success, rollback, page citations, upload streaming |
+| `tests/test_pdf_chat.py` | PDF questions in the chat stream: one grounded LLM call, "not found" without any LLM call, follow-up search text, history limit, image context, rate-limit message |
 | `tests/test_attachments_profile.py` | attachment ownership, profile endpoints |
 
 Groq and OCR.space are always **mocked** (no credits used), and so are almost

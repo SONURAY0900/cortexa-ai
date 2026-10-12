@@ -29,7 +29,7 @@ from agents.llm_agent import stream_response
 from agents.wikipedia_agent import wikipedia_agent
 from agents.tavily_agent import tavily_agent
 from agents.arxiv_agent import arxiv_agent
-from agents.rag_agent import rag_agent
+from agents.rag_agent import NOT_FOUND, retrieve_pdf_context, stream_pdf_answer
 from agents.speech_agent import speech_to_text_agent
 
 from account.routes import router as account_router
@@ -1323,6 +1323,7 @@ def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
             tool_parts = []
             sources = []
             error = ""
+            pdf_context = ""
 
             if route in SEARCH_AGENTS:
                 agent, label = SEARCH_AGENTS[route]
@@ -1362,15 +1363,17 @@ def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
                     "label": "Searching your PDF" + ("s" if len(plan.documents) > 1 else ""),
                 })
                 try:
-                    result = rag_agent(query=query, documents=plan.documents)
+                    # Retrieval only; the grounded answer is streamed below
+                    # in a single LLM call.
+                    result = retrieve_pdf_context(query, plan.documents, chat_history=current_history)
                     sources = result.get("sources", [])
 
                     if result.get("chunks"):
-                        tool_parts.insert(0, result.get("answer", ""))
+                        pdf_context = result["context"]
                     elif not plan.images:
                         # No relevant PDF information: do not let the LLM
                         # answer from general knowledge.
-                        fallback = "I could not find this information in the uploaded PDF."
+                        fallback = NOT_FOUND
                         yield _sse({"type": "content", "content": fallback})
                         _save_message(conversation_id, user, "ASSISTANT", fallback, route=route,
                                       metadata={"sources": [], "route_reason": route_reason})
@@ -1402,11 +1405,23 @@ def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
 
             full_response = ""
 
-            for chunk in stream_response(
-                query=query,
-                tool_result="\n\n".join(part for part in tool_parts if part),
-                chat_history=current_history
-            ):
+            if pdf_context:
+                # PDF questions: one grounded call that answers only from
+                # the retrieved pages (plus any attached image analysis).
+                answer_stream = stream_pdf_answer(
+                    query=query,
+                    context=pdf_context,
+                    chat_history=current_history,
+                    image_context="\n\n".join(part for part in tool_parts if part),
+                )
+            else:
+                answer_stream = stream_response(
+                    query=query,
+                    tool_result="\n\n".join(part for part in tool_parts if part),
+                    chat_history=current_history
+                )
+
+            for chunk in answer_stream:
                 if not chunk:
                     continue
                 full_response += chunk
@@ -1434,12 +1449,16 @@ def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
             yield _sse({"type": "done"})
 
         except Exception as e:
+            busy = getattr(e, "status_code", None) == 429
             log_agent("SYSTEM", f"Unexpected streaming error: {e!r}")
             log_activity(user_id, "CHAT_ERROR", query, "FAILED", route=route or None, document_id=first_document_id,
-                         metadata={"stage": "stream"})
+                         metadata={"stage": "stream", **({"reason": "llm_rate_limited"} if busy else {})})
             yield _sse({
                 "type": "error",
-                "content": "Something went wrong while processing your request.",
+                "content": (
+                    "The AI service is busy right now. Please wait a few seconds and try again."
+                    if busy else "Something went wrong while processing your request."
+                ),
             })
 
     return StreamingResponse(
