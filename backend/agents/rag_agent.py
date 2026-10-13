@@ -3,6 +3,7 @@ import re
 from langchain_groq import ChatGroq
 
 from config.settings import GROQ_API_KEY, GROQ_MAX_RETRIES, GROQ_TIMEOUT_S
+from agents.llm_agent import clip, history_lines
 from prompts.rag_prompt import RAG_PROMPT
 from rag.retrieval.retrieval_pipeline import retrieve_context
 
@@ -18,8 +19,9 @@ rag_llm = ChatGroq(
 # Characters of chunk text shown as a citation preview in the UI.
 SNIPPET_CHARS = 220
 
-# Earlier messages included so follow-up questions can be understood.
-HISTORY_MESSAGES = 6
+# Image analysis text added to a PDF question (keeps the prompt within
+# Groq's per-request limit; the PDF context itself is capped by retrieval).
+IMAGE_CONTEXT_CHARS = 3000
 
 NOT_FOUND = "I could not find this information in the uploaded PDF."
 
@@ -141,14 +143,11 @@ def build_pdf_prompt(
     """
 
     if image_context:
-        context = f"{context}\n\nAttached image analysis:\n{image_context}"
+        context = f"{context}\n\nAttached image analysis:\n{clip(image_context, IMAGE_CONTEXT_CHARS)}"
 
     prompt = RAG_PROMPT.format(query=query, context=context)
 
-    history = "".join(
-        f"{(m.get('role') or '').upper()}: {m.get('content') or ''}\n"
-        for m in (chat_history or [])[-HISTORY_MESSAGES:]
-    )
+    history = history_lines(chat_history)
 
     if history:
         prompt = (

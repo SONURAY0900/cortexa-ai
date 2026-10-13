@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 
 import main
 from auth import supabase_auth
-from auth.supabase_auth import get_current_user, is_admin
+from auth.supabase_auth import get_current_user, get_user_or_guest, is_admin
 from config import settings
 from services.storage import UPLOAD_ROOT, resolve_inside_uploads
 
@@ -67,6 +67,7 @@ class Base(unittest.TestCase):
 
     def login_as(self, user):
         main.app.dependency_overrides[get_current_user] = lambda: user
+        main.app.dependency_overrides[get_user_or_guest] = lambda: user
 
     def call(self, method, path, **kwargs):
         if method == "DELETE" and path.startswith("/admin/users/"):

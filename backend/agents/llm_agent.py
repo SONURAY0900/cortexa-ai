@@ -13,29 +13,42 @@ llm = ChatGroq(
 )
 
 
+# Groq's free tier rejects any single request larger than its limit of
+# 8,000 tokens per minute (HTTP 413), prompt included. At roughly four
+# characters per token these caps keep a prompt to about 3,000 tokens.
+HISTORY_MESSAGES = 6
+HISTORY_MESSAGE_CHARS = 600
+TOOL_RESULT_CHARS = 6000
+
+
+def clip(text: str, limit: int) -> str:
+    """Shorten text to at most `limit` characters, marking the cut."""
+    text = text or ""
+    return text if len(text) <= limit else text[:limit].rstrip() + " …"
+
+
+def history_lines(chat_history: list | None) -> str:
+    """The last few messages, each shortened, as ROLE: text lines."""
+    return "".join(
+        f"{(m.get('role') or '').upper()}: {clip(m.get('content') or '', HISTORY_MESSAGE_CHARS)}\n"
+        for m in (chat_history or [])[-HISTORY_MESSAGES:]
+    )
+
+
 def build_prompt(
     query: str,
     tool_result: str = "",
     chat_history: list = None
 ) -> str:
     """
-    Build the final LLM prompt with conversation history.
+    Build the final LLM prompt with (recent, shortened) conversation history.
     """
 
-    if chat_history is None:
-        chat_history = []
-
-    history_text = ""
-
-    for message in chat_history:
-        role = message.get("role", "")
-        content = message.get("content", "")
-
-        history_text += f"{role.upper()}: {content}\n"
+    history_text = history_lines(chat_history)
 
     prompt = LLM_PROMPT.format(
         query=query,
-        tool_result=tool_result
+        tool_result=clip(tool_result, TOOL_RESULT_CHARS)
     )
 
     if history_text:

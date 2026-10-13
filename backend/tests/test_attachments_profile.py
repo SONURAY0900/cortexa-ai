@@ -15,7 +15,7 @@ from unittest import mock
 from fastapi.testclient import TestClient
 
 import main
-from auth.supabase_auth import get_current_user
+from auth.supabase_auth import get_current_user, get_user_or_guest
 from services.files import FileStatus, ImageStepStatus, image_statuses
 from tests.test_security import make_user
 
@@ -34,6 +34,7 @@ class Base(unittest.TestCase):
     def login(self, user=None):
         user = user or make_user()
         main.app.dependency_overrides[get_current_user] = lambda: user
+        main.app.dependency_overrides[get_user_or_guest] = lambda: user
         return user
 
 

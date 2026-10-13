@@ -665,6 +665,15 @@ textarea#userInput.dimmed { opacity: .5; }
     animation: modalIn .28s var(--ease);
 }
 .modal-wide { width: min(720px, 100%); }
+.modal { position: relative; }
+.modal-close {
+    position: absolute; top: 14px; right: 14px;
+    width: 32px; height: 32px; border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid var(--border); background: var(--surface-2); color: var(--muted);
+    cursor: pointer; transition: color .15s, border-color .15s, transform .15s;
+}
+.modal-close:hover { color: var(--text); border-color: var(--border-strong); transform: scale(1.06); }
 .modal-brand { display: flex; justify-content: center; margin-bottom: 10px; }
 .modal-icon { width: 44px; height: 44px; border-radius: 12px; display: flex; align-items: center; justify-content: center; background: var(--accent-soft); color: var(--accent); margin-bottom: 14px; }
 .modal-icon.danger { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); }

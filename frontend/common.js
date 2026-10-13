@@ -26,6 +26,73 @@ const MESSAGES = {
 
 
 /* =====================================================
+   GUEST IDENTITY
+   Visitors can chat without an account. A random id kept in this browser
+   ties their guest chats together; after sign-in GuestChats.claim() moves
+   those chats into the account. Uploads always need an account.
+   ===================================================== */
+
+const GUEST_KEY = "cortexa-guest-id";
+
+const Guest = {
+    memory: null,
+
+    newId() {
+        if (window.crypto?.randomUUID) return crypto.randomUUID();
+        const b = crypto.getRandomValues(new Uint8Array(16));
+        b[6] = (b[6] & 0x0f) | 0x40;
+        b[8] = (b[8] & 0x3f) | 0x80;
+        const h = [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
+        return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+    },
+
+    /** This browser's guest id (created on first use unless create is false). */
+    id({ create = true } = {}) {
+        try {
+            let id = localStorage.getItem(GUEST_KEY);
+            if (!id && create) {
+                id = Guest.newId();
+                localStorage.setItem(GUEST_KEY, id);
+            }
+            return id;
+        } catch (_) {
+            // Storage blocked: a per-page id still lets the visitor chat.
+            if (!Guest.memory && create) Guest.memory = Guest.newId();
+            return Guest.memory;
+        }
+    },
+
+    clear() {
+        Guest.memory = null;
+        try { localStorage.removeItem(GUEST_KEY); } catch (_) { /* storage blocked */ }
+    },
+};
+
+const GuestChats = {
+    running: null,
+
+    /** After sign-in: move this browser's guest chats into the account. */
+    claim() {
+        const guestId = Guest.id({ create: false });
+        if (!guestId || !Auth.user) return Promise.resolve();
+        GuestChats.running ||= Api.post("/conversations/claim-guest", { guest_session_id: guestId }, { quiet: true })
+            .then((data) => {
+                Guest.clear();
+                if (data?.claimed) {
+                    Toast.success(data.claimed === 1
+                        ? "Your guest chat was saved to your account."
+                        : `Your ${data.claimed} guest chats were saved to your account.`);
+                    window.dispatchEvent(new CustomEvent("guestchats:claimed", { detail: data }));
+                }
+            })
+            .catch(() => { /* kept; retried at the next sign-in */ })
+            .finally(() => { GuestChats.running = null; });
+        return GuestChats.running;
+    },
+};
+
+
+/* =====================================================
    SMALL HELPERS
    ===================================================== */
 
@@ -478,6 +545,7 @@ const Auth = {
         if (previousStatus !== Auth.status || (Auth.user?.id || null) !== previousId) {
             UserMenu.render();
             Auth.emit();
+            if (Auth.user) GuestChats.claim();
         } else if (event === "USER_UPDATED") {
             UserMenu.render();
         }
@@ -599,6 +667,10 @@ const Api = {
         const token = await Auth.token();
         const finalHeaders = { ...headers };
         if (token) finalHeaders.Authorization = `Bearer ${token}`;
+        else {
+            const guestId = Guest.id();
+            if (guestId) finalHeaders["X-Guest-Session"] = guestId;
+        }
         if (json !== undefined) finalHeaders["Content-Type"] = "application/json";
 
         const retry = (delay) => new Promise((resolve) => setTimeout(resolve, delay))
@@ -635,7 +707,7 @@ const Api = {
                     if (refreshed === "ok") return Api.request(path, { ...options, _attempt: 1 });
                     if (refreshed === "unavailable") throw new ApiError(MESSAGES.authUnavailable, 503);
                 }
-                message = MESSAGES.session;
+                message = token ? MESSAGES.session : (message || "Please log in to continue.");
                 if (!quiet && Auth.user) await Auth.expire();
             } else if (response.status === 503) {
                 if (method === "GET" && _attempt === 0) return retry(1500);
@@ -929,9 +1001,14 @@ const AuthModal = {
             }
         });
 
+        const closeButton = el("button", {
+            class: "modal-close", type: "button", "aria-label": "Close", title: "Close",
+            html: ICONS.close, onclick: () => modal.close(),
+        });
+
         const modal = Modal.open([
             el("div", { class: "modal-brand" }, [el("img", { src: "/frontend/assets/logo/logo.svg", width: "40", height: "40", alt: "" })]),
-            title, subtitle, form,
+            title, subtitle, form, closeButton,
         ], {
             labelledBy: "authTitle",
             onClose: () => {

@@ -78,3 +78,8 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 BREVO_API_KEY = os.getenv("BREVO_API_KEY", "")
+
+# Guests (no account) may chat but not upload. Messages per rolling hour,
+# counted both per guest id and per client IP, so anonymous use cannot
+# exhaust the Groq quota. 0 disables guest chat entirely.
+GUEST_MESSAGES_PER_HOUR = int(os.getenv("GUEST_MESSAGES_PER_HOUR", "20"))

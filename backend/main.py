@@ -34,7 +34,7 @@ from agents.speech_agent import speech_to_text_agent
 
 from account.routes import router as account_router
 from admin.routes import router as admin_router
-from auth.supabase_auth import RoleUnavailable, get_current_user, is_admin
+from auth.supabase_auth import RoleUnavailable, get_current_user, get_user_or_guest, is_admin, is_guest
 from config.settings import (
     ALLOWED_ORIGINS,
     APP_ENV,
@@ -50,6 +50,7 @@ from config.settings import (
 from database.connection import supabase
 from rag.pipeline import IngestionError, ingest_pdf_with_summary
 from rag.retrieval.vector_store import delete_document
+from services import guest_limits
 from services.activity import log_activity
 from services.welcome_email import send_welcome_if_new
 from services.files import (
@@ -294,8 +295,23 @@ class AttachmentPlan:
 # PERSISTENT CHAT MEMORY / SUPABASE
 # ============================================================
 
-def _user_id(user) -> str:
-    return str(user.id)
+def _user_id(user) -> str | None:
+    """The account id, or None for a guest."""
+    return None if is_guest(user) else str(user.id)
+
+
+def _own_conversations(query, owner):
+    """Limit a conversations query to the owner's rows (account or guest)."""
+    if is_guest(owner):
+        return query.eq("guest_session_id", owner.guest_id).is_("user_id", "null")
+    return query.eq("user_id", _user_id(owner))
+
+
+def _own_messages(query, owner):
+    """Limit a messages query that is already scoped to an owned conversation."""
+    if is_guest(owner):
+        return query.is_("user_id", "null")
+    return query.eq("user_id", _user_id(owner))
 
 
 def _document_owned_by_user(document_id: str, user) -> dict | None:
@@ -320,16 +336,14 @@ def _document_owned_by_user(document_id: str, user) -> dict | None:
 
 def _conversation_owned_by_user(conversation_id: str, user) -> bool:
     try:
-        result = (
+        query = (
             supabase
             .table("conversations")
             .select("id")
             .eq("id", conversation_id)
-            .eq("user_id", _user_id(user))
             .eq("is_archived", False)
-            .limit(1)
-            .execute()
         )
+        result = _own_conversations(query, user).limit(1).execute()
         return bool(result.data)
     except Exception as e:
         log_agent("DATABASE", f"Conversation ownership check failed: {e}")
@@ -337,11 +351,12 @@ def _conversation_owned_by_user(conversation_id: str, user) -> bool:
 
 
 def _create_conversation(user, title: str = "New Chat") -> dict:
+    owner = {"guest_session_id": user.guest_id} if is_guest(user) else {"user_id": _user_id(user)}
     result = (
         supabase
         .table("conversations")
         .insert({
-            "user_id": _user_id(user),
+            **owner,
             "title": (title or "New Chat").strip()[:120] or "New Chat",
         })
         .execute()
@@ -359,16 +374,14 @@ def _get_or_create_conversation(
     title: str = "New Chat",
 ) -> dict:
     if conversation_id:
-        result = (
+        query = (
             supabase
             .table("conversations")
             .select("*")
             .eq("id", conversation_id)
-            .eq("user_id", _user_id(user))
             .eq("is_archived", False)
-            .limit(1)
-            .execute()
         )
+        result = _own_conversations(query, user).limit(1).execute()
 
         if result.data:
             return result.data[0]
@@ -386,16 +399,13 @@ def _get_conversation_history(
     user,
     limit: int = 20,
 ) -> list[dict]:
-    result = (
+    query = (
         supabase
         .table("messages")
         .select("role,content,created_at")
         .eq("conversation_id", conversation_id)
-        .eq("user_id", _user_id(user))
-        .order("created_at", desc=True)
-        .limit(limit)
-        .execute()
     )
+    result = _own_messages(query, user).order("created_at", desc=True).limit(limit).execute()
 
     rows = list(reversed(result.data or []))
 
@@ -435,11 +445,8 @@ def _save_message(
 def _unanswered_question_id(conversation_id: str, user, query: str) -> str | None:
     """ID of the conversation's last message if it is this same, unanswered user question."""
     try:
-        rows = (
-            supabase.table("messages").select("id,role,content")
-            .eq("conversation_id", conversation_id).eq("user_id", _user_id(user))
-            .order("created_at", desc=True).limit(1).execute().data
-        )
+        lookup = supabase.table("messages").select("id,role,content").eq("conversation_id", conversation_id)
+        rows = _own_messages(lookup, user).order("created_at", desc=True).limit(1).execute().data
     except Exception as e:
         log_agent("DATABASE", f"Retry lookup failed: {e}")
         return None
@@ -463,15 +470,8 @@ def _update_conversation_title_if_needed(
     user,
     query: str,
 ):
-    result = (
-        supabase
-        .table("conversations")
-        .select("title")
-        .eq("id", conversation_id)
-        .eq("user_id", _user_id(user))
-        .limit(1)
-        .execute()
-    )
+    lookup = supabase.table("conversations").select("title").eq("id", conversation_id)
+    result = _own_conversations(lookup, user).limit(1).execute()
 
     if not result.data:
         return
@@ -486,13 +486,8 @@ def _update_conversation_title_if_needed(
     if len(title) > 60:
         title = title[:57].rstrip() + "..."
 
-    supabase.table("conversations").update({
-        "title": title or "New Chat"
-    }).eq(
-        "id", conversation_id
-    ).eq(
-        "user_id", _user_id(user)
-    ).execute()
+    update = supabase.table("conversations").update({"title": title or "New Chat"}).eq("id", conversation_id)
+    _own_conversations(update, user).execute()
 
 
 def _plan_attachments(request: ChatRequest, user) -> AttachmentPlan:
@@ -986,17 +981,15 @@ class ConversationCreate(BaseModel):
 
 
 @app.get("/conversations")
-def list_conversations(user=Depends(get_current_user)):
+def list_conversations(user=Depends(get_user_or_guest)):
     try:
-        result = (
+        query = (
             supabase
             .table("conversations")
             .select("id,title,is_archived,created_at,updated_at,last_message_at")
-            .eq("user_id", _user_id(user))
             .eq("is_archived", False)
-            .order("updated_at", desc=True)
-            .execute()
         )
+        result = _own_conversations(query, user).order("updated_at", desc=True).execute()
         return {"success": True, "conversations": result.data or []}
     except Exception as e:
         log_agent("DATABASE", f"List conversations failed: {e}")
@@ -1006,7 +999,7 @@ def list_conversations(user=Depends(get_current_user)):
 @app.post("/conversations")
 def create_conversation(
     body: ConversationCreate | None = None,
-    user=Depends(get_current_user),
+    user=Depends(get_user_or_guest),
 ):
     try:
         conversation = _create_conversation(user, body.title if body else "New Chat")
@@ -1017,22 +1010,52 @@ def create_conversation(
 
 
 @app.post("/conversations/archive-all")
-def archive_all_conversations(user=Depends(get_current_user)):
+def archive_all_conversations(user=Depends(get_user_or_guest)):
     """Remove every chat from the user's history (soft archive, like single delete)."""
     try:
-        archived = (
-            supabase.table("conversations")
-            .update({"is_archived": True})
-            .eq("user_id", _user_id(user))
-            .eq("is_archived", False)
-            .execute()
-            .data
-            or []
-        )
+        update = supabase.table("conversations").update({"is_archived": True}).eq("is_archived", False)
+        archived = _own_conversations(update, user).execute().data or []
         return {"success": True, "archived": len(archived)}
     except Exception as e:
         log_agent("DATABASE", f"Archive all conversations failed: {e}")
         raise HTTPException(status_code=500, detail="Unable to clear your chat history.")
+
+
+class GuestClaim(BaseModel):
+    guest_session_id: UUID
+
+
+@app.post("/conversations/claim-guest")
+def claim_guest_conversations(body: GuestClaim, user=Depends(get_current_user)):
+    """
+    Move a visitor's guest chats into the account they just signed in to.
+    Only that browser knows the random guest id, which proves ownership.
+
+    Messages are moved before their conversations, so a run interrupted
+    half-way can simply be repeated: unclaimed conversations are still
+    found by guest id and their remaining messages still have no owner.
+    """
+    guest_id = str(body.guest_session_id)
+    user_id = _user_id(user)
+    try:
+        rows = (
+            supabase.table("conversations").select("id")
+            .eq("guest_session_id", guest_id).is_("user_id", "null")
+            .execute().data or []
+        )
+        ids = [r["id"] for r in rows]
+        if ids:
+            (supabase.table("messages").update({"user_id": user_id})
+             .in_("conversation_id", ids).is_("user_id", "null").execute())
+            (supabase.table("conversations").update({"user_id": user_id, "guest_session_id": None})
+             .in_("id", ids).is_("user_id", "null").execute())
+    except Exception as e:
+        log_agent("DATABASE", f"Claim guest conversations failed: {e!r}")
+        raise HTTPException(status_code=500, detail="Unable to save your guest chats to your account.")
+
+    if ids:
+        log_agent("CHAT", f"Moved {len(ids)} guest conversation(s) to user {user_id[:8]}")
+    return {"success": True, "claimed": len(ids)}
 
 
 def _client_message_metadata(messages: list[dict], user) -> None:
@@ -1044,6 +1067,12 @@ def _client_message_metadata(messages: list[dict], user) -> None:
     """
     user_id = _user_id(user)
     legacy_docs, legacy_images = set(), set()
+
+    if is_guest(user):
+        # Guests cannot attach files; only drop server-side fields.
+        for m in messages:
+            (m.get("metadata") or {}).pop("image_path", None)
+        return
 
     for m in messages:
         meta = m.get("metadata") or {}
@@ -1089,21 +1118,19 @@ def _client_message_metadata(messages: list[dict], user) -> None:
 @app.get("/conversations/{conversation_id}/messages")
 def get_conversation_messages(
     conversation_id: str,
-    user=Depends(get_current_user),
+    user=Depends(get_user_or_guest),
 ):
     if not _conversation_owned_by_user(conversation_id, user):
         raise HTTPException(status_code=404, detail="Conversation not found.")
 
     try:
-        result = (
+        query = (
             supabase
             .table("messages")
             .select("id,conversation_id,role,content,route,metadata,created_at")
             .eq("conversation_id", conversation_id)
-            .eq("user_id", _user_id(user))
-            .order("created_at", desc=False)
-            .execute()
         )
+        result = _own_messages(query, user).order("created_at", desc=False).execute()
         messages = result.data or []
         _client_message_metadata(messages, user)
         return {
@@ -1119,19 +1146,14 @@ def get_conversation_messages(
 @app.delete("/conversations/{conversation_id}")
 def archive_conversation(
     conversation_id: str,
-    user=Depends(get_current_user),
+    user=Depends(get_user_or_guest),
 ):
     if not _conversation_owned_by_user(conversation_id, user):
         raise HTTPException(status_code=404, detail="Conversation not found.")
 
     try:
-        supabase.table("conversations").update({
-            "is_archived": True,
-        }).eq(
-            "id", conversation_id
-        ).eq(
-            "user_id", _user_id(user)
-        ).execute()
+        update = supabase.table("conversations").update({"is_archived": True}).eq("id", conversation_id)
+        _own_conversations(update, user).execute()
 
         return {
             "success": True,
@@ -1252,10 +1274,20 @@ def _sse(payload: dict) -> str:
 
 
 @app.post("/chat/stream")
-def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
+def chat_stream(request: ChatRequest, http_request: Request, user=Depends(get_user_or_guest)):
 
     query = request.query
     user_id = _user_id(user)
+
+    if is_guest(user):
+        # Guests can chat, but files, images and voice need an account.
+        if request.attachments or request.context_file_ids or request.document_id or request.image_id:
+            raise HTTPException(status_code=401, detail="Please log in to upload PDFs and images.")
+        if not guest_limits.allow(user.guest_id, guest_limits.client_ip(http_request)):
+            raise HTTPException(
+                status_code=429,
+                detail="You've reached the guest chat limit for now. Log in to keep chatting.",
+            )
 
     # Every file is resolved by ID and ownership before anything runs.
     plan = _plan_attachments(request, user)
@@ -1449,15 +1481,18 @@ def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
             yield _sse({"type": "done"})
 
         except Exception as e:
-            busy = getattr(e, "status_code", None) == 429
+            status = getattr(e, "status_code", None)
+            busy, too_large = status == 429, status == 413
             log_agent("SYSTEM", f"Unexpected streaming error: {e!r}")
+            reason = {429: "llm_rate_limited", 413: "llm_request_too_large"}.get(status)
             log_activity(user_id, "CHAT_ERROR", query, "FAILED", route=route or None, document_id=first_document_id,
-                         metadata={"stage": "stream", **({"reason": "llm_rate_limited"} if busy else {})})
+                         metadata={"stage": "stream", **({"reason": reason} if reason else {})})
             yield _sse({
                 "type": "error",
                 "content": (
-                    "The AI service is busy right now. Please wait a few seconds and try again."
-                    if busy else "Something went wrong while processing your request."
+                    "The AI service is busy right now. Please wait a few seconds and try again." if busy
+                    else "That request was too long for the AI service. Try a shorter question or start a new chat."
+                    if too_large else "Something went wrong while processing your request."
                 ),
             })
 

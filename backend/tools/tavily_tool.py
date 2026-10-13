@@ -19,6 +19,10 @@ except Exception as e:
     TAVILY_IMPORT_ERROR = str(e)
 
 
+# Characters kept from each search result's extract.
+RESULT_CHARS = 900
+
+
 def search_tavily(query: str) -> dict:
     """
     Search Tavily and return content and source information.
@@ -57,7 +61,9 @@ def search_tavily(query: str) -> dict:
 
         for result in results:
             title = result.get("title", "")
-            content = result.get("content", "")
+            # Advanced search can return long extracts; five full ones
+            # pushed prompts past Groq's per-request token limit.
+            content = (result.get("content", "") or "")[:RESULT_CHARS]
             url = result.get("url", "")
 
             formatted_results.append(

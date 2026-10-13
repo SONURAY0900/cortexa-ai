@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 
 import main
 from agents import rag_agent as rag
-from auth.supabase_auth import get_current_user
+from auth.supabase_auth import get_current_user, get_user_or_guest
 from tests.test_security import make_user
 
 
@@ -30,7 +30,9 @@ class StreamedPdfAnswer(unittest.TestCase):
 
     def setUp(self):
         self.client = TestClient(main.app, raise_server_exceptions=False)
-        main.app.dependency_overrides[get_current_user] = lambda: make_user()
+        user = make_user()
+        main.app.dependency_overrides[get_current_user] = lambda: user
+        main.app.dependency_overrides[get_user_or_guest] = lambda: user
         self.addCleanup(main.app.dependency_overrides.clear)
 
         plan = main.AttachmentPlan(documents=[{"id": "doc-1", "filename": "notes.pdf"}])
@@ -112,6 +114,53 @@ class StreamedPdfAnswer(unittest.TestCase):
         error = next(e for e in evts if e["type"] == "error")
         self.assertIn("busy", error["content"])
         self.assertNotIn("429", error["content"])
+
+    def test_request_too_large_has_its_own_message(self):
+        class TooLarge(Exception):
+            status_code = 413
+
+        llm = mock.Mock()
+        llm.stream.side_effect = TooLarge("413 request too large")
+        with mock.patch.object(main, "retrieve_pdf_context", return_value=self.retrieval()), \
+                mock.patch.object(rag, "rag_llm", llm):
+            evts = events(self.ask())
+        error = next(e for e in evts if e["type"] == "error")
+        self.assertIn("too long", error["content"])
+        self.assertNotIn("413", error["content"])
+
+
+class PromptBudget(unittest.TestCase):
+    """Prompts must stay well under Groq's 8,000-token per-request limit."""
+
+    def test_general_prompt_is_capped(self):
+        from agents import llm_agent
+        history = [{"role": "user" if i % 2 == 0 else "assistant", "content": "x" * 5000} for i in range(20)]
+        prompt = llm_agent.build_prompt("latest AI news?", "y" * 50000, history)
+        self.assertLess(len(prompt), 12000)                          # about 3,000 tokens
+        self.assertEqual(prompt.count("USER:") + prompt.count("ASSISTANT:"), llm_agent.HISTORY_MESSAGES)
+        self.assertIn(" …", prompt)                                  # long parts are visibly cut
+
+    def test_short_inputs_are_unchanged(self):
+        from agents import llm_agent
+        prompt = llm_agent.build_prompt("q", "short result", [{"role": "user", "content": "hello"}])
+        self.assertIn("short result", prompt)
+        self.assertIn("USER: hello\n", prompt)
+        self.assertNotIn(" …", prompt)
+
+    def test_pdf_prompt_history_and_image_text_are_capped(self):
+        history = [{"role": "assistant", "content": "z" * 5000}] * 10
+        prompt = rag.build_pdf_prompt("q", "ctx", history, image_context="i" * 20000)
+        self.assertLess(len(prompt), 12000)
+
+    def test_search_results_are_trimmed(self):
+        from tools import tavily_tool
+        fake = mock.Mock()
+        fake.search.return_value = {"results": [{"title": f"t{i}", "content": "c" * 10000, "url": f"https://e.com/{i}"}
+                                                for i in range(5)]}
+        with mock.patch.object(tavily_tool, "tavily_client", fake), mock.patch.object(tavily_tool, "TAVILY_AVAILABLE", True):
+            result = tavily_tool.search_tavily("news")
+        self.assertLess(len(result["content"]), 5 * (tavily_tool.RESULT_CHARS + 200))
+        self.assertEqual(len(result["sources"]), 5)
 
 
 class PdfPrompt(unittest.TestCase):

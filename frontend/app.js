@@ -285,23 +285,18 @@ const chat = {
             el("p", {
                 text: loggedIn
                     ? "I pick the right tool for every question — web search, Wikipedia, research papers, your PDFs or images."
-                    : "Sign in to chat, search the web and research papers, and ask questions about your own PDFs and images.",
+                    : "Ask anything as a guest. Log in to upload PDFs and images, use voice and keep your chats in your account.",
             }),
-            loggedIn
-                ? el("div", { class: "chips" }, SUGGESTIONS.map((s, i) => el("button", {
-                    class: "chip",
-                    type: "button",
-                    style: `animation-delay:${80 + i * 60}ms`,
-                    onclick: () => sendMessage(s.text),
-                }, [
-                    el("span", { class: `dot route-dot route-${s.route}` }),
-                    el("span", { class: "chip-text", text: s.text }),
-                    el("em", { text: ROUTES[s.route].label }),
-                ])))
-                : el("div", { class: "hero-actions" }, [
-                    el("button", { class: "btn btn-primary", type: "button", text: "Log in", onclick: () => AuthModal.open("login") }),
-                    el("button", { class: "btn btn-outline", type: "button", text: "Create account", onclick: () => AuthModal.open("signup") }),
-                ]),
+            el("div", { class: "chips" }, SUGGESTIONS.map((s, i) => el("button", {
+                class: "chip",
+                type: "button",
+                style: `animation-delay:${80 + i * 60}ms`,
+                onclick: () => sendMessage(s.text),
+            }, [
+                el("span", { class: `dot route-dot route-${s.route}` }),
+                el("span", { class: "chip-text", text: s.text }),
+                el("em", { text: ROUTES[s.route].label }),
+            ]))),
         ]));
     },
 
@@ -513,16 +508,19 @@ const sidebar = {
         const needle = ($("chatSearch").value || "").trim().toLowerCase();
         const items = state.conversations.filter((c) => !needle || (c.title || "").toLowerCase().includes(needle));
 
-        if (!Auth.user) {
-            if (!Auth.resolved) return sidebar.skeleton();
-            list.replaceChildren(el("li", {
-                class: "empty-note",
-                text: Auth.status === "error" ? "Your chats will appear once you're reconnected." : "Log in to see your chats.",
-            }));
+        if (!Auth.resolved) return sidebar.skeleton();
+        if (Auth.status === "error") {
+            list.replaceChildren(el("li", { class: "empty-note", text: "Your chats will appear once you're reconnected." }));
             return;
         }
         if (!items.length) {
-            list.replaceChildren(el("li", { class: "empty-note", text: needle ? "No chats match your search." : "No chats yet. Ask your first question!" }));
+            const guest = !Auth.user;
+            list.replaceChildren(el("li", {
+                class: "empty-note",
+                text: needle ? "No chats match your search."
+                    : guest ? "Chatting as a guest. Log in to keep your chats in your account."
+                    : "No chats yet. Ask your first question!",
+            }));
             return;
         }
 
@@ -545,7 +543,9 @@ const sidebar = {
     },
 
     async load({ openLatest = false } = {}) {
-        if (!Auth.user) {
+        // Signed-in users and guests both have chats; wait while the
+        // session is still being checked or the sign-in service is down.
+        if (Auth.status !== "signed-in" && Auth.status !== "signed-out") {
             state.conversations = [];
             sidebar.render();
             return;
@@ -716,7 +716,8 @@ async function sendMessage(text, { retry = null } = {}) {
 
     if (!query || state.streaming) return;
 
-    if (!Auth.requireUser("Please log in to start chatting.")) return;
+    if (!Auth.resolved) { Toast.info("Checking your sign-in…"); return; }
+    if (Auth.status === "error") { Toast.error(Auth.error || MESSAGES.authUnavailable); return; }
 
     // A retry re-sends the same attachments; otherwise use the composer.
     const outgoing = retry ? retry.attachments : attachments.ready();
@@ -1426,12 +1427,33 @@ const voice = {
    AUTH-AWARE UI
    ===================================================== */
 
+// A guest conversation open at sign-in; reopened once it is claimed.
+let pendingGuestConversation = null;
+let wasGuest = false;
+
 function applyAuthState() {
     const loggedIn = Boolean(Auth.user);
     const signedOut = Auth.status === "signed-out";
+
+    if (loggedIn && wasGuest && state.conversationId) {
+        pendingGuestConversation = state.conversationId;
+        state.conversationId = null;
+    }
+    wasGuest = signedOut;
     const input = $("userInput");
-    input.placeholder = signedOut ? "Log in to start chatting" : "Ask anything…";
+    input.placeholder = "Ask anything…";
     document.body.classList.toggle("logged-out", signedOut);
+
+    // New visitors see the sign-in dialog once per browser session; closing
+    // it (x) lets them chat as a guest.
+    if (signedOut && !AuthModal.current) {
+        let prompted = false;
+        try { prompted = sessionStorage.getItem("cortexa-login-prompted") === "1"; } catch (_) { /* storage blocked */ }
+        if (!prompted) {
+            try { sessionStorage.setItem("cortexa-login-prompted", "1"); } catch (_) { /* storage blocked */ }
+            AuthModal.open("login", { message: "Log in to upload PDFs and images and keep your chats, or close this to chat as a guest." });
+        }
+    }
 
     if (!loggedIn) {
         state.conversationId = null;
@@ -1471,9 +1493,6 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     });
     input.addEventListener("input", autoGrow);
-    input.addEventListener("focus", () => {
-        if (Auth.status === "signed-out") AuthModal.open("login", { message: "Please log in to start chatting." });
-    });
 
     $("voiceButton").addEventListener("click", () => {
         if ($("voiceButton").dataset.state === "listening") voice.stop();
@@ -1519,6 +1538,13 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     initAttachments();
+
+    window.addEventListener("guestchats:claimed", async () => {
+        await sidebar.load();
+        const id = pendingGuestConversation;
+        pendingGuestConversation = null;
+        if (id && !state.streaming && !state.conversationId) openConversation(id);
+    });
 
     Auth.onChange(applyAuthState);
 });

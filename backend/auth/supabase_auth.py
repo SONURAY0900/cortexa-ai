@@ -1,4 +1,6 @@
 import time
+import uuid
+from dataclasses import dataclass
 
 import httpx
 from fastapi import Depends, Header, HTTPException
@@ -92,6 +94,50 @@ def get_current_user(authorization: str | None = Header(default=None)):
         )
 
     return _verify_token(token)
+
+
+# ============================================================
+# GUESTS (chat without an account)
+# ============================================================
+
+@dataclass(frozen=True)
+class Guest:
+    """
+    A visitor who chats without an account. guest_id is a random UUID the
+    browser generates and keeps; it works like a bearer secret for that
+    visitor's guest chats until they sign in and the chats are claimed.
+    Guests can only send text: every upload endpoint requires a login.
+    """
+    guest_id: str
+    id = None
+    email = None
+
+
+def is_guest(principal) -> bool:
+    return isinstance(principal, Guest)
+
+
+def get_user_or_guest(
+    authorization: str | None = Header(default=None),
+    x_guest_session: str | None = Header(default=None),
+):
+    """
+    The signed-in user when a token is sent (an invalid token is still a
+    401, never silently downgraded to a guest); otherwise a Guest
+    identified by the X-Guest-Session header.
+    """
+
+    if authorization:
+        return get_current_user(authorization)
+
+    if x_guest_session:
+        try:
+            guest_id = str(uuid.UUID(x_guest_session.strip()))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid guest session.")
+        return Guest(guest_id)
+
+    raise HTTPException(status_code=401, detail="Please log in to continue.")
 
 
 ROLE_UNAVAILABLE = "We couldn't verify your access right now. Please try again in a moment."

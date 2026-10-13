@@ -391,6 +391,34 @@ Example template body (works for both templates):
 <p>It expires in 10 minutes. If you didn't request it, ignore this email.</p>
 ```
 
+### 🧑 Guest chat
+
+Visitors can chat without an account:
+
+- On a visitor's first page view in a browser session the sign-in dialog
+  opens; its **×** closes it and the visitor continues as a guest.
+- Guests can send text questions (direct answers, Wikipedia, web search,
+  arXiv). Uploading PDFs or images, voice input, profile and settings need
+  an account: the server rejects them with `401` and the browser opens the
+  sign-in dialog instead.
+- Guest chats are stored like normal chats, with `user_id` empty and
+  `conversations.guest_session_id` set to a random id the browser keeps in
+  `localStorage` and sends as `X-Guest-Session`. That id is the only key to
+  those chats; another guest id sees nothing (`404`).
+- Each guest id and each client IP may send `GUEST_MESSAGES_PER_HOUR`
+  messages per rolling hour (default 20; `0` turns guest chat off), so
+  anonymous use can't exhaust the Groq quota. The counter is in memory and
+  resets when the server restarts.
+- A request with an invalid sign-in token is still a `401`; it is never
+  treated as a guest.
+
+**After sign-in, guest chats move to the account.** The browser calls
+`POST /conversations/claim-guest` with its guest id. The server moves the
+messages, then the conversations, to the signed-in user (so an interrupted
+run can simply be repeated), the browser forgets the guest id, shows
+"Your guest chats were saved to your account" and reopens the chat the
+visitor was in. This works the same for every user and every sign-in method.
+
 ### 👋 Welcome email
 
 New accounts get one welcome email ("Welcome to Cortexa AI"), whether
@@ -645,6 +673,7 @@ Defined in `backend/.env` (never committed). The template is
 | `ALLOWED_ORIGINS` | no | CORS origins, only if the frontend is served elsewhere |
 | `MAX_PDF_MB` / `MAX_IMAGE_MB` / `MAX_AUDIO_MB` | no | upload limits (25 / 10 / 25) |
 | `GROQ_TIMEOUT_S` / `GROQ_MAX_RETRIES` | no | Groq request timeout and retries (60 / 2) |
+| `GUEST_MESSAGES_PER_HOUR` | no | messages a guest (per guest id and per IP) may send per hour (20; `0` disables guest chat) |
 | `EMAIL_OTP_EXPIRY_S` / `EMAIL_OTP_RESEND_S` | no | countdowns in the code dialog (600 / 60). Display only: keep them equal to the Supabase settings, which are what enforce expiry and resend limits. |
 | `WELCOME_EMAIL_PROVIDER` | no | `smtp`, `resend` or `brevo`; empty disables welcome emails |
 | `EMAIL_FROM` | with a provider | sender, e.g. `Cortexa AI <no-reply@your-domain.com>` |
@@ -721,7 +750,9 @@ cache-busted with `?v=<version>`.
 ## 📡 23. API reference
 
 All endpoints except `/health`, `/config` and the HTML pages need
-`Authorization: Bearer <Supabase access token>`.
+`Authorization: Bearer <Supabase access token>`. The conversation endpoints
+and `/chat/stream` also accept a guest (`X-Guest-Session: <uuid>`, text only;
+see [§12](#12-authentication-and-sessions)).
 
 | Method | Path | Description |
 |---|---|---|
@@ -735,7 +766,8 @@ All endpoints except `/health`, `/config` and the HTML pages need
 | GET | `/files/{file_id}/content` | download your own file |
 | DELETE | `/files/{file_id}` | delete your own file |
 | POST | `/voice/transcribe` | speech to text |
-| GET | `/conversations` | list your conversations |
+| GET | `/conversations` | list your conversations (signed in, or as a guest with `X-Guest-Session`) |
+| POST | `/conversations/claim-guest` | move this browser's guest chats into the signed-in account |
 | POST | `/conversations` | create a conversation |
 | POST | `/conversations/archive-all` | archive all your conversations |
 | GET | `/conversations/{id}/messages` | messages of your conversation |
@@ -791,6 +823,7 @@ The second command runs from the repository root and needs Node.js 18+.
 | `tests/frontend/auth-flows.test.js` | email code flow: request, verify, wrong and expired codes, 600 s countdown, resend and cooldown, rate limits, delivery and network errors, duplicate submissions, no codes in logs |
 | `tests/test_pdf_ocr.py` | text / scanned / mixed PDFs, OCR retries and fallbacks, partial success, rollback, page citations, upload streaming |
 | `tests/test_pdf_chat.py` | PDF questions in the chat stream: one grounded LLM call, "not found" without any LLM call, follow-up search text, history limit, image context, rate-limit message |
+| `tests/test_guest_chat.py` | guest identity, invalid token never downgraded, uploads still need login, guest-only conversation filters, guest chat stream, per-guest/per-IP hourly limit, claiming guest chats (order, filters, empty, invalid id) |
 | `tests/test_attachments_profile.py` | attachment ownership, profile endpoints |
 
 Groq and OCR.space are always **mocked** (no credits used), and so are almost
