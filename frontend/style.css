@@ -509,11 +509,10 @@ textarea#userInput.dimmed { opacity: .5; }
 .attachment-tray, .context-bar { max-width: 860px; margin: 0 auto 8px; display: flex; flex-wrap: wrap; gap: 8px; }
 .attach-card {
     position: relative;
-    display: flex; align-items: center; gap: 10px;
-    width: 236px; max-width: 100%;
-    padding: 8px 36px 8px 8px;
+    display: flex; flex-direction: column;
+    width: 200px; max-width: 100%;
     background: var(--surface-solid);
-    border: 1px solid var(--border); border-radius: 14px;
+    border: 1px solid var(--border); border-radius: 16px;
     box-shadow: var(--shadow-sm);
     overflow: hidden;
     animation: attachIn .28s var(--ease) both;
@@ -521,41 +520,70 @@ textarea#userInput.dimmed { opacity: .5; }
 }
 .attach-card.leaving { opacity: 0; transform: scale(.94); }
 .attach-card.is-error { border-color: color-mix(in srgb, var(--danger) 50%, var(--border)); }
-.attach-card.is-ready { border-color: color-mix(in srgb, var(--success) 35%, var(--border)); }
-.attach-thumb { width: 44px; height: 44px; flex-shrink: 0; border-radius: 10px; overflow: hidden; background: var(--surface-2); }
-.attach-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.attach-card.is-uploading .attach-thumb img { opacity: .55; }
+.attach-card.is-partial { border-color: color-mix(in srgb, var(--warning) 55%, var(--border)); }
+
+/* preview: first PDF page or the image itself */
+.attach-preview { position: relative; height: 112px; background: var(--surface-2); overflow: hidden; }
+.attach-preview img { width: 100%; height: 100%; object-fit: cover; display: block; transition: filter .3s, transform .3s; }
+.attach-card.pdf .attach-preview img { object-position: top center; }
+.attach-placeholder { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--pdf); }
+.attach-placeholder svg { width: 34px; height: 34px; }
+.attach-card.is-uploading .attach-preview img,
+.attach-card.is-processing .attach-preview img,
+.attach-card.is-error .attach-preview img { filter: blur(2px) brightness(.7); transform: scale(1.05); }
+
+/* busy / error layer over the preview */
+.attach-overlay {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px;
+    padding: 10px 12px; text-align: center;
+    background: rgba(15, 23, 42, .28); color: #fff;
+}
+.attach-overlay .spinner { width: 26px; height: 26px; border-width: 2.5px; border-color: rgba(255, 255, 255, .35); border-top-color: #fff; }
+.attach-status { font-size: 11.5px; font-weight: 600; line-height: 1.3; text-shadow: 0 1px 2px rgba(0, 0, 0, .45); }
+.attach-overlay.is-error { background: rgba(15, 23, 42, .62); }
+.attach-overlay.is-error .attach-status { color: #fecaca; font-weight: 500; }
+.attach-retry {
+    border: 1px solid rgba(255, 255, 255, .55); background: rgba(255, 255, 255, .12); color: #fff;
+    border-radius: 8px; padding: 3px 12px; font-size: 12px; font-weight: 600; cursor: pointer;
+    transition: background .15s;
+}
+.attach-retry:hover { background: rgba(255, 255, 255, .25); }
+.attach-flag {
+    position: absolute; left: 8px; right: 40px; bottom: 8px;
+    font-size: 10.5px; font-weight: 600; line-height: 1.3; color: #fff;
+    background: color-mix(in srgb, var(--warning) 85%, #000); border-radius: 6px; padding: 3px 6px;
+}
+.attach-progress { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: rgba(255, 255, 255, .25); }
+.attach-progress span { display: block; height: 100%; background: var(--grad); transition: width .2s; }
+.attach-progress.indeterminate span { width: 35%; animation: indeterminate 1.3s ease-in-out infinite; }
+@keyframes indeterminate { from { transform: translateX(-100%); } to { transform: translateX(290%); } }
+
+/* file name strip */
+.attach-caption { display: flex; align-items: center; gap: 8px; padding: 8px 10px; min-width: 0; }
+.attach-caption .file-name { font-size: 12.5px; }
+
+/* round close / cancel button */
+.attach-remove {
+    position: absolute; top: 7px; right: 7px; z-index: 2;
+    width: 26px; height: 26px; border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 2px solid #fff; background: #111827; color: #fff;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, .35);
+    cursor: pointer; transition: transform .15s, background .15s;
+}
+.attach-remove svg { width: 12px; height: 12px; }
+.attach-remove:hover { background: var(--danger); transform: scale(1.08); }
+
 .file-badge { width: 44px; height: 44px; flex-shrink: 0; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; }
 .file-badge.pdf { background: color-mix(in srgb, var(--pdf) 14%, transparent); color: var(--pdf); }
+.file-badge.image { background: color-mix(in srgb, var(--image) 14%, transparent); color: var(--image); }
 .file-badge.small { width: 22px; height: 22px; border-radius: 6px; }
 .file-badge.small svg { width: 13px; height: 13px; }
 .file-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; text-align: left; }
 .file-name { font-size: 13px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .file-kind { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); }
 .file-kind.error { color: var(--danger); white-space: normal; line-height: 1.3; }
-.attach-remove {
-    position: absolute; top: 6px; right: 6px;
-    width: 24px; height: 24px; border-radius: 50%;
-    display: inline-flex; align-items: center; justify-content: center;
-    border: 1px solid var(--border); background: var(--surface-solid); color: var(--muted);
-    cursor: pointer; transition: color .15s, border-color .15s, transform .15s;
-}
-.attach-remove svg { width: 13px; height: 13px; }
-.attach-remove:hover { color: var(--danger); border-color: var(--danger); transform: scale(1.08); }
-.attach-progress { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: var(--surface-2); }
-.attach-progress span { display: block; height: 100%; background: var(--grad); transition: width .2s; }
-.attach-card.is-partial { border-color: color-mix(in srgb, var(--warning) 55%, var(--border)); }
-.attach-card.is-partial .file-kind { color: var(--warning); white-space: normal; line-height: 1.3; }
-.attach-card.is-error { flex-wrap: wrap; }
-.attach-retry {
-    margin-left: 54px; margin-top: 2px;
-    border: 1px solid var(--border-strong); background: var(--surface-solid); color: var(--text);
-    border-radius: 8px; padding: 3px 10px; font-size: 12px; font-weight: 600; cursor: pointer;
-    transition: border-color .15s, color .15s;
-}
-.attach-retry:hover { border-color: var(--accent); color: var(--accent); }
-.attach-progress.indeterminate span { width: 35%; animation: indeterminate 1.3s ease-in-out infinite; }
-@keyframes indeterminate { from { transform: translateX(-100%); } to { transform: translateX(290%); } }
 .spinner.tiny { width: 11px; height: 11px; border-width: 2px; display: inline-block; }
 .composer-pending .send-btn, .has-pending .send-btn:not(.is-stop) { opacity: .55; }
 

@@ -54,6 +54,7 @@ const state = {
 const $ = (id) => document.getElementById(id);
 
 const ICON_PDF = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>';
+const ICON_IMAGE = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>';
 
 
 /* =====================================================
@@ -847,6 +848,75 @@ function autoGrow() {
 
 
 /* =====================================================
+   PDF FIRST-PAGE PREVIEWS
+   PDF.js is loaded from cdnjs only when the first PDF is attached. The
+   preview is cosmetic: if anything fails the card keeps its PDF icon and
+   the upload is unaffected.
+   ===================================================== */
+
+const PDFJS_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+const PDFJS_SRI = "sha384-/1qUCSGwTur9vjf/z9lmu/eCUYbpOTgSjmpbMQZ1/CtX2v/WcAIKqRv+U1DUCG6e";
+const PDFJS_WORKER_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+const PDFJS_WORKER_SRI = "sha384-SnzOobpRMLXZ52iJvZm/C0fYw0OQemTXzTjIsdsfMcrCtCEe9qgzxTd3RSklO5x2";
+
+const PdfPreview = {
+    ready: null,
+
+    load() {
+        PdfPreview.ready ||= (async () => {
+            await new Promise((resolve, reject) => {
+                const script = el("script", { src: PDFJS_URL, integrity: PDFJS_SRI, crossorigin: "anonymous" });
+                script.onload = resolve;
+                script.onerror = () => reject(new Error("PDF.js could not be loaded"));
+                document.head.append(script);
+            });
+            // The worker is fetched with an integrity check and run from a
+            // same-origin blob URL.
+            const response = await fetch(PDFJS_WORKER_URL, { integrity: PDFJS_WORKER_SRI, mode: "cors" });
+            if (!response.ok) throw new Error("PDF.js worker could not be loaded");
+            window.pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(await response.blob());
+            return window.pdfjsLib;
+        })().catch((error) => {
+            PdfPreview.ready = null;
+            throw error;
+        });
+        return PdfPreview.ready;
+    },
+
+    /** The first page as a small JPEG data URL, or null. */
+    async firstPage(file, width = 220) {
+        try {
+            const pdfjs = await PdfPreview.load();
+            const data = new Uint8Array(await file.arrayBuffer());
+            // isEvalSupported: false keeps font code from running as script
+            // (CVE-2024-4367).
+            const doc = await pdfjs.getDocument({ data, isEvalSupported: false }).promise;
+            try {
+                const page = await doc.getPage(1);
+                const scale = (width * Math.min(window.devicePixelRatio || 1, 2)) / page.getViewport({ scale: 1 }).width;
+                const viewport = page.getViewport({ scale });
+                const canvas = document.createElement("canvas");
+                canvas.width = Math.ceil(viewport.width);
+                canvas.height = Math.ceil(viewport.height);
+                const context = canvas.getContext("2d");
+                context.fillStyle = "#ffffff";
+                context.fillRect(0, 0, canvas.width, canvas.height);
+                // "print" renders in one go; the default "display" intent
+                // paces itself with requestAnimationFrame, which browsers
+                // pause in background tabs, so the preview would stall.
+                await page.render({ canvasContext: context, viewport, intent: "print" }).promise;
+                return canvas.toDataURL("image/jpeg", 0.82);
+            } finally {
+                doc.destroy();
+            }
+        } catch (_) {
+            return null;
+        }
+    },
+};
+
+
+/* =====================================================
    COMPOSER ATTACHMENTS (photos & files)
    One pipeline for the file picker, drag & drop and paste.
    ===================================================== */
@@ -916,6 +986,13 @@ const attachments = {
             state.attachments.push(entry);
             room--;
             attachments.upload(entry);
+            if (kind === "pdf") {
+                PdfPreview.firstPage(file).then((url) => {
+                    if (!url || !state.attachments.includes(entry)) return;
+                    entry.thumbUrl = url;
+                    attachments.render();
+                });
+            }
         }
         attachments.render();
     },
@@ -993,37 +1070,45 @@ const attachments = {
             node.title = a.summary ? `${a.summary.pages_total} page(s) · ${a.summary.pages_indexed.length} searchable`
                 + (a.summary.pages_needing_ocr ? ` · ${a.summary.pages_needing_ocr} read with OCR` : "") : "";
             const busy = a.status === "uploading" || a.status === "processing";
+            const picture = a.kind === "image" ? a.previewUrl : a.thumbUrl;
+            const label = attachments.statusLabel(a);
 
-            const visual = a.kind === "image"
-                ? el("span", { class: "attach-thumb" }, [el("img", { src: a.previewUrl, alt: "" })])
-                : el("span", { class: "file-badge pdf", html: ICON_PDF });
-
-            node.replaceChildren(...[
-                visual,
-                el("span", { class: "file-meta" }, [
-                    el("span", { class: "file-name", text: a.name, title: a.name }),
-                    el("span", { class: `file-kind ${a.status === "error" ? "error" : ""}` }, [
-                        busy ? el("span", { class: "spinner tiny", "aria-hidden": "true" }) : null,
-                        attachments.statusLabel(a),
-                    ]),
-                ]),
-                busy && a.stage === "upload"
-                    ? el("span", { class: "attach-progress" }, [el("span", { style: `width:${a.progress}%` })])
-                    : busy ? el("span", { class: "attach-progress indeterminate" }, [el("span")]) : null,
-                a.status === "error" && a.retryable !== false
-                    ? el("button", {
+            const preview = el("div", { class: "attach-preview" }, [
+                picture
+                    ? el("img", { src: picture, alt: "", decoding: "async" })
+                    : el("span", { class: "attach-placeholder", html: ICON_PDF }),
+                busy ? el("div", { class: "attach-overlay", role: "status" }, [
+                    el("span", { class: "spinner", "aria-hidden": "true" }),
+                    el("span", { class: "attach-status", text: label }),
+                ]) : null,
+                a.status === "error" ? el("div", { class: "attach-overlay is-error", role: "alert" }, [
+                    el("span", { class: "attach-status", text: label }),
+                    a.retryable !== false ? el("button", {
                         class: "attach-retry", type: "button", text: "Try again",
                         "aria-label": `Upload ${a.name} again`,
                         onclick: () => attachments.retry(a.localId),
-                    })
-                    : null,
+                    }) : null,
+                ]) : null,
+                a.status === "ready" && a.partial ? el("span", { class: "attach-flag", text: label }) : null,
+                busy ? el("span", { class: `attach-progress${a.stage === "upload" ? "" : " indeterminate"}` }, [
+                    el("span", { style: a.stage === "upload" ? `width:${a.progress}%` : null }),
+                ]) : null,
+            ]);
+
+            node.replaceChildren(...[
+                preview,
+                el("div", { class: "attach-caption" }, [
+                    el("span", { class: `file-badge small ${a.kind}`, html: a.kind === "pdf" ? ICON_PDF : ICON_IMAGE }),
+                    el("span", { class: "file-name", text: a.name, title: a.name }),
+                ]),
                 el("button", {
                     class: "attach-remove", type: "button",
-                    "aria-label": `Remove ${a.name}`, title: "Remove",
+                    "aria-label": busy ? `Cancel uploading ${a.name}` : `Remove ${a.name}`,
+                    title: busy ? "Cancel upload" : "Remove",
                     html: ICONS.close,
                     onclick: () => attachments.remove(a.localId),
                 }),
-            ].filter(Boolean));
+            ]);
             return node;
         });
         tray.replaceChildren(...nodes);

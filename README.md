@@ -669,6 +669,20 @@ cd backend
 uvicorn main:app --reload
 ```
 
+On Windows with Smart App Control, `uvicorn` can fail with "DLL load failed
+… Application Control policy" for `mmh3` or `_uuid_utils`. Use the launcher
+instead:
+
+```bash
+cd backend
+python -m scripts.run_local
+```
+
+It runs the same app on http://127.0.0.1:8000 (no auto-reload). Only if one
+of those modules is blocked does it substitute a pure-Python stand-in: `mmh3`
+is only used by FastEmbed's sparse models, which this app doesn't use, and
+`uuid_utils` only creates LangChain trace ids. No Windows setting is changed.
+
 | URL | Page |
 |---|---|
 | http://127.0.0.1:8000/ | Chat |
@@ -696,7 +710,7 @@ cache-busted with `?v=<version>`.
 
 | Page | What it does |
 |---|---|
-| Chat (`/`) | conversation sidebar, streaming answers, attachments (PDF/image), voice, sources, retry |
+| Chat (`/`) | conversation sidebar, streaming answers, attachments (PDF/image) shown as preview cards (first PDF page or the image, a spinner while uploading, × to cancel or remove), voice, sources, retry |
 | Profile (`/profile`) | display name, account details, usage counts |
 | Settings (`/settings`) | theme, voice language and auto-send, sign-in method, change password, log out everywhere, archive all chats |
 | About (`/about`) | overview, how a question is answered, routing, architecture, PDF pipeline, tech stack, security and creator |
@@ -841,10 +855,12 @@ Also:
   redeploys. PDF chunks live in Supabase either way.
 - The first request after a deploy is slower while the embedding model
   downloads.
-- **Memory:** with `all-MiniLM-L6-v2` the app uses about 280 MB after start and
-  peaked at about 420 MB while embedding 300 chunks (measured on Windows), so
-  Render's free 512 MB instance is enough. Chunks are embedded 32 at a time
-  to keep that peak low.
+- **Memory:** with `all-MiniLM-L6-v2` the app uses about 280 MB after start.
+  Uploading a 128-page PDF (301 chunks) peaked at about 380 MB (measured on
+  Windows), so Render's free 512 MB instance is enough. Two settings matter:
+  chunks are embedded 8 at a time, and ONNX Runtime's CPU memory arena is off.
+  With the arena on, the same upload peaked at about 800 MB and crashed the
+  free instance. The vectors are identical either way.
 
 <a name="28-troubleshooting"></a>
 
@@ -857,7 +873,7 @@ Also:
 | Admin page says "Access denied" | the email isn't in `ADMIN_EMAIL`, isn't confirmed, or `profiles.role` isn't `ADMIN` (see [§13](#13-roles-and-admin-access)) |
 | A PDF upload says some pages are unreadable | OCR failed for those pages after all retries. The rest is indexed. Re-upload later to retry. |
 | "This PDF has no readable text" | the PDF has no embedded text and OCR found none (for example blank pages) |
-| Backend can't start on Windows: `mmh3` DLL blocked | Smart App Control blocks `mmh3.pyd` (a FastEmbed dependency). Allow it, or run on Linux/Render. |
+| Backend can't start on Windows: `mmh3` or `_uuid_utils` "DLL load failed … Application Control policy" | Smart App Control blocks these native modules. Start with `python -m scripts.run_local` (see [§21](#21-running-locally)), which uses pure-Python stand-ins only for what is blocked. |
 | `ValueError: GROQ_API_KEY is missing` | `backend/.env` isn't filled in |
 | "That code is incorrect or has expired" | wrong code, a code from an older email, or more than 10 minutes passed. Request a new code and use the newest email. |
 | "This code has expired" | the 10-minute countdown ran out. Click **Resend code**. |

@@ -9,10 +9,15 @@ MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 # Chunks embedded per batch. FastEmbed's default (256) briefly needs
 # gigabytes of memory on large PDFs; small batches keep the peak low
 # without changing the vectors.
-BATCH_SIZE = 32
+BATCH_SIZE = 8
 
+# ONNX Runtime's CPU memory arena keeps a buffer for every input shape it
+# has seen, and real chunks all have different lengths: embedding a
+# 300-chunk PDF peaked at ~680 MB with it and ~260 MB without it (same
+# vectors). Off, so uploads fit a 512 MB instance.
 embedding_model = TextEmbedding(
-    model_name=MODEL_NAME
+    model_name=MODEL_NAME,
+    enable_cpu_mem_arena=False,
 )
 
 
