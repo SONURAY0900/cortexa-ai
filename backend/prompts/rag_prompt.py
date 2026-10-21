@@ -1,3 +1,5 @@
+from prompts.chart_prompt import CHART_RULES_TEMPLATE
+
 RAG_PROMPT = """
 You are a PDF question-answering agent.
 
@@ -26,6 +28,7 @@ Rules:
 12. If the context includes an "Attached image analysis" section, you may
     use it too, together with the PDF context.
 
+""" + CHART_RULES_TEMPLATE + """
 User Question:
 {query}
 

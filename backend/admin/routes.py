@@ -374,6 +374,26 @@ def admin_me(admin=Depends(get_current_admin)):
 # DASHBOARD
 # ============================================================
 
+TREND_DAYS = 14
+
+
+def _daily_counts(timestamps, days: int = TREND_DAYS, today: datetime | None = None) -> dict:
+    """
+    Count timestamps per UTC day for the last `days` days (today included).
+    Returns {"days": ["YYYY-MM-DD", ...], "counts": [int, ...]}, oldest first;
+    days without events count 0.
+    """
+
+    end = (today or datetime.now(timezone.utc)).date()
+    window = [end - timedelta(days=offset) for offset in range(days - 1, -1, -1)]
+    counts = dict.fromkeys(window, 0)
+    for value in timestamps:
+        ts = _parse_time(value)
+        if ts and ts.astimezone(timezone.utc).date() in counts:
+            counts[ts.astimezone(timezone.utc).date()] += 1
+    return {"days": [d.isoformat() for d in window], "counts": list(counts.values())}
+
+
 @router.get("/dashboard")
 def dashboard(admin=Depends(get_current_admin)):
 
@@ -417,6 +437,15 @@ def dashboard(admin=Depends(get_current_admin)):
             "routes": dict(Counter(e["route"] or "UNKNOWN" for e in chat_events)),
             "activity_logging_enabled": logging_enabled,
             "image_tracking_note": "Image uploads are recorded from v1.1 onward; earlier image uploads were not stored.",
+        },
+        "trends": {
+            "days": _daily_counts([])["days"],
+            "questions": _daily_counts(e["timestamp"] for e in chat_events)["counts"],
+            "new_users": _daily_counts(u["created_at"] for u in users)["counts"],
+            "uploads": _daily_counts(
+                [d.get("uploaded_at") for d in documents if d.get("user_id")]
+                + [f.get("uploaded_at") for f in images]
+            )["counts"],
         },
         "recent_activity": _attach_emails(_all_events()[:8], {u["id"]: u["email"] for u in users}),
     }

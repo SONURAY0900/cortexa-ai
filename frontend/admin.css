@@ -84,6 +84,9 @@
 
 /* panels */
 .panels { display: grid; grid-template-columns: 1fr 1.6fr; gap: 14px; }
+.panels + .panels { margin-top: 14px; }
+.panels-even { grid-template-columns: 1fr 1fr; }
+.panel .chart { margin: 0; }
 .panel {
     background: var(--surface);
     -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px);
@@ -93,12 +96,6 @@
 .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--border); }
 .panel-head h2 { font-size: 15px; font-weight: 600; }
 .panel-body { padding: 14px 16px; }
-.bars { display: flex; flex-direction: column; gap: 10px; }
-.bar-row { display: grid; grid-template-columns: 92px 1fr 40px; align-items: center; gap: 10px; font-size: 12.5px; }
-.bar-track { height: 9px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
-.bar-fill { display: block; height: 100%; border-radius: inherit; background: var(--c, var(--accent)); width: 0; transition: width .8s var(--ease); }
-.bar-row .route-badge { justify-self: start; }
-.bar-count { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
 
 /* toolbar */
 .toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }

@@ -94,12 +94,17 @@ Supabase per user.
 - 🎙️ **Voice input:** Whisper transcription with optional auto-send.
 - ⚡ **Streaming UI:** live stages ("Choosing the best route", "Reading text in the
   image", "Writing the answer"), sources and retry.
+- 📈 **Charts in answers:** when an answer compares numbers or shows a trend, the
+  model can add a ```` ```chart ```` JSON block, drawn as a bar or line chart
+  with tooltips, a legend and a table view (`frontend/charts.js`, no library).
+  Only numbers from the retrieved information are allowed.
 - 👤 **Accounts:** password, emailed one-time code and Google sign-in through
   Supabase Auth, a welcome email for new accounts, plus profile (display name)
   and settings (theme, voice language, auto-send, change password, log out
   everywhere, archive all chats).
-- 📊 **Admin panel:** dashboard, users, documents, images, activity, audit log and
-  system health, all behind server-side role checks.
+- 📊 **Admin panel:** dashboard with charts (questions per day, sign-ups and
+  uploads per day, questions by route), users, documents, images, activity,
+  audit log and system health, all behind server-side role checks.
 - 🌗 **Light/dark theme** and a responsive layout down to phone width.
 
 <a name="3-tech-stack"></a>
@@ -611,11 +616,12 @@ frontend/
   admin.html  admin.js    admin panel
   about.html              about page
   auth-flows.js           sign-in logic without DOM: email code flow, auth error messages
+  charts.js               bar and line charts for chat answers and the admin dashboard
   common.js               shared auth/session, sign-in dialog, API client, UI helpers
   style.css pages.css admin.css about.css
   assets/                 logo and icons
 supabase/migrations/      SQL migrations (run in the Supabase SQL editor)
-tests/frontend/           Node unit tests for frontend/auth-flows.js
+tests/frontend/           Node unit tests for frontend/auth-flows.js and charts.js
 ```
 
 <a name="18-prerequisites"></a>
@@ -798,7 +804,9 @@ endpoints, and those endpoints enforce the admin rule from
 - "Can't check your access right now" (503).
 
 Destructive actions ask for confirmation and are written to `admin_audit_log`.
-Statistics come from the real tables; nothing is estimated or invented.
+Statistics come from the real tables; nothing is estimated or invented. The
+dashboard charts show the last 14 days (UTC) from `GET /admin/dashboard`
+(`trends`: questions, new users and uploads per day).
 
 <a name="25-testing"></a>
 
@@ -825,6 +833,8 @@ The second command runs from the repository root and needs Node.js 18+.
 | `tests/test_pdf_chat.py` | PDF questions in the chat stream: one grounded LLM call, "not found" without any LLM call, follow-up search text, history limit, image context, rate-limit message |
 | `tests/test_guest_chat.py` | guest identity, invalid token never downgraded, uploads still need login, guest-only conversation filters, guest chat stream, per-guest/per-IP hourly limit, claiming guest chats (order, filters, empty, invalid id) |
 | `tests/test_attachments_profile.py` | attachment ownership, profile endpoints |
+| `tests/test_charts.py` | chart rules in the answer prompts, per-day dashboard counts (UTC days, empty days, invalid times) |
+| `tests/frontend/charts.test.js` | chart spec validation (malformed JSON, caps on labels/series/text, number cleaning), axis ticks, number formatting |
 
 Groq and OCR.space are always **mocked** (no credits used), and so are almost
 all Supabase calls. Three tests are **read-only live checks** against the

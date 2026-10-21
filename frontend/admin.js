@@ -249,10 +249,15 @@ const views = {
         const banner = el("div");
         const routes = el("div", { class: "panel" }, [el("div", { class: "panel-head" }, [el("h2", { text: "Questions by route" })]), el("div", { class: "panel-body" }, [el("span", { class: "skeleton skeleton-line" })])]);
         const recent = el("div", { class: "panel" }, [el("div", { class: "panel-head" }, [el("h2", { text: "Recent activity" }), el("a", { class: "link-btn", href: "#activity", text: "View all" })]), el("div", { class: "panel-body" }, [el("span", { class: "skeleton skeleton-line" })])]);
+        const chartPanel = (title) => el("div", { class: "panel" }, [el("div", { class: "panel-head" }, [el("h2", { text: title })]), el("div", { class: "panel-body" }, [el("span", { class: "skeleton skeleton-line" })])]);
+        const questionsTrend = chartPanel("Questions per day");
+        const growthTrend = chartPanel("Sign-ups and uploads per day");
 
         view().replaceChildren(
             pageHead("Dashboard", "Live totals from the application database.", [refreshButton(() => views.dashboard())]),
-            banner, cards, el("div", { class: "panels" }, [routes, recent]),
+            banner, cards,
+            el("div", { class: "panels panels-even" }, [questionsTrend, growthTrend]),
+            el("div", { class: "panels" }, [routes, recent]),
         );
 
         let data;
@@ -286,18 +291,27 @@ const views = {
             banner.replaceChildren(notice("Activity logging is not enabled yet, so voice use and failed requests are not recorded. Run <code>supabase/migrations/20261008_activity_logging.sql</code> in the Supabase SQL editor. Chats, searches and PDF uploads are already shown from existing tables."));
         }
 
-        const total = Object.values(d.routes).reduce((a, b) => a + b, 0) || 1;
-        const routeBody = routes.querySelector(".panel-body");
         const entries = Object.entries(d.routes).sort((a, b) => b[1] - a[1]);
-        routeBody.replaceChildren(entries.length ? el("div", { class: "bars" }, entries.map(([route, count]) => {
-            const fill = el("span", { class: "bar-fill" });
-            requestAnimationFrame(() => requestAnimationFrame(() => { fill.style.width = `${(count / total) * 100}%`; }));
-            return el("div", { class: `bar-row route-${route}` }, [
-                ROUTE_LABELS[route] ? el("span", { class: `route-badge route-${route}`, text: ROUTE_LABELS[route] }) : el("span", { class: "cell-sub", text: "Unknown" }),
-                el("span", { class: "bar-track" }, [fill]),
-                el("span", { class: "bar-count", text: String(count) }),
-            ]);
-        })) : el("div", { class: "table-empty", text: "No questions yet." }));
+        routes.querySelector(".panel-body").replaceChildren(entries.length
+            ? Charts.createChart(Charts.parseChartSpec({
+                type: "bar",
+                labels: entries.map(([route]) => ROUTE_LABELS[route] || "Unknown"),
+                series: [{ name: "Questions", data: entries.map(([, count]) => count) }],
+            }), { hideTitle: true })
+            : el("div", { class: "table-empty", text: "No questions yet." }));
+
+        // Last 14 days (UTC), oldest first. A server without `trends` (an
+        // older backend) gets a note instead of breaking the rest of the page.
+        const t = data.trends;
+        const days = (t?.days || []).map((day) => new Date(`${day}T00:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" }));
+        const trendChart = (panel, series) => {
+            const spec = Charts.parseChartSpec({ type: "line", labels: days, series });
+            panel.querySelector(".panel-body").replaceChildren(spec
+                ? Charts.createChart(spec, { hideTitle: true })
+                : el("div", { class: "table-empty", text: "Daily trends aren't available from the server yet." }));
+        };
+        trendChart(questionsTrend, [{ name: "Questions", data: t?.questions }]);
+        trendChart(growthTrend, [{ name: "New users", data: t?.new_users }, { name: "Uploads", data: t?.uploads }]);
 
         const recentBody = recent.querySelector(".panel-body");
         recentBody.style.padding = "0";

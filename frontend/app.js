@@ -80,7 +80,15 @@ function renderMarkdown(source) {
     const blocks = [];
     let text = escapeHTML(source || "");
 
-    text = text.replace(/```([\w+-]*)\n?([\s\S]*?)(```|$)/g, (_, lang, code) => {
+    text = text.replace(/```([\w+-]*)\n?([\s\S]*?)(```|$)/g, (_, lang, code, end) => {
+        // ```chart blocks become placeholders that setText() fills with a
+        // chart (the JSON stays escaped inside the attribute).
+        if (lang.toLowerCase() === "chart") {
+            blocks.push(end
+                ? `<div class="chart-slot" data-chart="${code.trim()}"></div>`
+                : '<div class="chart-slot is-pending">Drawing chart…</div>');
+            return `\n@@BLOCK${blocks.length - 1}@@\n`;
+        }
         blocks.push(
             `<div class="code-block"><div class="code-head"><span>${lang || "code"}</span>` +
             `<button type="button" class="code-copy">Copy</button></div>` +
@@ -339,6 +347,7 @@ const chat = {
         ]);
         chat.inner.append(wrap);
 
+        const charts = new Map();
         const api = {
             wrap, card, body, text: "",
             setRoute(name) {
@@ -348,6 +357,17 @@ const chat = {
             setText(markdown) {
                 api.text = markdown;
                 body.innerHTML = renderMarkdown(markdown);
+                body.querySelectorAll(".chart-slot[data-chart]").forEach((slot) => {
+                    // Reuse the chart already drawn for this JSON, so streaming
+                    // text after it doesn't redraw it on every chunk.
+                    const json = slot.dataset.chart;
+                    if (!charts.has(json)) {
+                        const spec = Charts.parseChartSpec(json);
+                        charts.set(json, spec ? Charts.createChart(spec)
+                            : el("div", { class: "chart-error", text: "This answer included chart data that couldn't be read." }));
+                    }
+                    slot.replaceWith(charts.get(json));
+                });
                 body.querySelectorAll(".code-copy").forEach((button) => {
                     button.addEventListener("click", () => copyText(button.closest(".code-block").querySelector("code").textContent, button));
                 });
@@ -366,7 +386,7 @@ const chat = {
                     el("span", { class: "step", text: "Groq LLM" }),
                 ]) : el("div");
                 const copy = el("button", { class: "copy-btn", type: "button", text: "Copy" });
-                copy.addEventListener("click", () => copyText(api.text, copy));
+                copy.addEventListener("click", () => copyText(api.text.replace(/```chart[\s\S]*?(```|$)/gi, "").trim(), copy));
                 card.append(el("div", { class: "answer-foot" }, [trace, copy]));
             },
             setError(message, onRetry) {

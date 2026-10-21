@@ -58,6 +58,12 @@
     --grid: rgba(11, 11, 11, 0.04);
     --orb-opacity: 0;
     --canvas-opacity: 0.35;
+
+    /* chart series (validated for CVD against this surface) */
+    --series-1: #2a78d6;
+    --series-2: #eb6834;
+    --series-3: #1baf7a;
+    --series-4: #eda100;
     --code-bg: #0b0b0b;
 
     /* legacy aliases used by about.css */
@@ -105,6 +111,11 @@
     --grid: rgba(255, 255, 255, 0.04);
     --orb-opacity: 0;
     --canvas-opacity: 0.5;
+
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
     --code-bg: #050505;
 }
 
@@ -400,6 +411,48 @@ button, input, textarea, select { font: inherit; color: inherit; }
 .answer-body th, .answer-body td { padding: 8px 12px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
 .answer-body th { background: var(--surface-2); font-weight: 600; }
 .answer-body tr:last-child td { border-bottom: 0; }
+
+/* charts (frontend/charts.js) */
+.chart { margin: 18px 0 4px; position: relative; }
+.chart-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.chart-titles { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.chart-title { font-size: 14.5px; font-weight: 600; color: var(--text); line-height: 1.4; }
+.chart-unit { font-size: 12px; color: var(--muted); }
+.chart-toggle { flex-shrink: 0; border: 1px solid var(--border); background: transparent; color: var(--muted); border-radius: 7px; padding: 3px 10px; font-size: 11.5px; cursor: pointer; }
+.chart-toggle:hover { color: var(--text); background: var(--hover); }
+.chart-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-bottom: 8px; font-size: 12.5px; color: var(--text-2); }
+.chart-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.chart-key { width: 10px; height: 10px; border-radius: 3px; }
+.chart-key.line { width: 14px; height: 2px; border-radius: 1px; }
+.chart-plot { position: relative; width: 100%; }
+.chart-plot svg { display: block; overflow: visible; }
+.chart-gridline { stroke: var(--border); stroke-width: 1; }
+.chart-baseline { stroke: var(--border-strong); stroke-width: 1; }
+.chart-axis { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.chart-label { fill: var(--text-2); font-size: 12px; }
+.chart-value { fill: var(--text-2); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.chart-mark { cursor: default; outline: none; transition: opacity .15s; }
+.chart-mark:hover, .chart-mark:focus-visible { opacity: .82; }
+.chart-mark:focus-visible { stroke: var(--focus); stroke-width: 2; }
+.chart-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.chart-area { opacity: .1; }
+.chart-dot { stroke: var(--bg); stroke-width: 2; }
+.chart-cross { stroke: var(--border-strong); stroke-width: 1; }
+.chart-hit { fill: transparent; outline: none; }
+.chart-hit:focus-visible { stroke: var(--focus); stroke-width: 1; }
+.chart-tip { position: absolute; z-index: 5; pointer-events: none; min-width: 120px; max-width: 240px; padding: 8px 10px; border-radius: 9px; background: var(--surface-solid); border: 1px solid var(--border-strong); box-shadow: var(--shadow); font-size: 12px; }
+.chart-tip-title { color: var(--muted); margin-bottom: 4px; overflow-wrap: anywhere; }
+.chart-tip-row { display: flex; align-items: center; gap: 8px; line-height: 1.6; }
+.chart-tip-row strong { color: var(--text); font-variant-numeric: tabular-nums; }
+.chart-tip-name { color: var(--text-2); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chart-tip-key { width: 12px; height: 2px; border-radius: 1px; flex-shrink: 0; }
+.chart .table-wrap table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.chart .table-wrap th, .chart .table-wrap td { padding: 7px 12px; border-bottom: 1px solid var(--border); text-align: left; }
+.chart .table-wrap th { background: var(--surface-2); font-weight: 600; }
+.chart .table-wrap td.num { font-variant-numeric: tabular-nums; }
+.chart .table-wrap tr:last-child td { border-bottom: 0; }
+.chart-slot.is-pending { margin: 14px 0; padding: 14px; border: 1px dashed var(--border-strong); border-radius: 10px; color: var(--muted); font-size: 13px; }
+.chart-error { margin: 12px 0; font-size: 12.5px; color: var(--muted); }
 
 /* sources */
 .sources { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }

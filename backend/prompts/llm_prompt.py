@@ -1,3 +1,5 @@
+from prompts.chart_prompt import CHART_RULES_TEMPLATE
+
 LLM_PROMPT = """
 You are the final response agent of an AI chatbot.
 
@@ -17,6 +19,7 @@ Rules:
 7. Keep the answer easy to understand.
 8. Use examples when they improve understanding.
 
+""" + CHART_RULES_TEMPLATE + """
 User Query:
 {query}
 
