@@ -684,8 +684,6 @@ const Api = {
                 body: json !== undefined ? JSON.stringify(json) : body,
                 signal,
             });
-            // Any HTTP answer (even 4xx) means the server is reachable.
-            if (response.status < 500) ServerStatus.markOnline();
         } catch (error) {
             if (error.name === "AbortError") throw error;
             if (method === "GET" && _attempt === 0) return retry(800);
@@ -1163,52 +1161,6 @@ function initHeaderDate() {
     node.textContent = now.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
-/** Header connection badge. Any response from the API counts as
- *  "Connected" (see Api.request), so a browser extension that blocks the
- *  periodic check can't make a working app look offline. */
-const ServerStatus = {
-    lastOk: 0,
-    markOnline() {
-        ServerStatus.lastOk = Date.now();
-        ServerStatus.show("online");
-    },
-    show(state) {
-        const status = document.getElementById("status");
-        const text = document.getElementById("statusText");
-        if (!status) return;
-        status.className = { online: "status online", offline: "status offline" }[state] || "status";
-        text.textContent = { online: "Connected", offline: "Offline" }[state] || "Connecting…";
-    },
-};
-
-function initStatus() {
-    if (!document.getElementById("status")) return;
-
-    // A single failed check is common right after a deploy or while a
-    // sleeping server wakes up, so retry quickly before showing "Offline".
-    let failures = 0;
-    let timer = null;
-
-    const check = async () => {
-        clearTimeout(timer);
-        if (document.hidden) return;
-        try {
-            // /config is tiny, public and already needed for sign-in.
-            const response = await fetch("/config", { cache: "no-store" });
-            if (!response.ok) throw new Error();
-            failures = 0;
-            ServerStatus.markOnline();
-        } catch (_) {
-            failures += 1;
-            const recentlyOk = Date.now() - ServerStatus.lastOk < 60000;
-            ServerStatus.show(recentlyOk ? "online" : failures < 3 ? "connecting" : "offline");
-        }
-        timer = setTimeout(check, failures ? Math.min(30000, 2000 * 2 ** (failures - 1)) : 30000);
-    };
-    check();
-    document.addEventListener("visibilitychange", () => { if (!document.hidden) check(); });
-}
-
 
 /* =====================================================
    BOOT
@@ -1217,7 +1169,6 @@ function initStatus() {
 document.addEventListener("DOMContentLoaded", () => {
     initBackground();
     Theme.init();
-    initStatus();
     initHeaderDate();
     UserMenu.render();
     Auth.init();

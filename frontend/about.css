@@ -4,7 +4,7 @@ body.about-page { overflow-y: auto; height: auto; min-height: 100%; }
 .about { max-width: 1000px; width: 100%; margin: 0 auto; padding: 56px 20px 32px; flex: 1; }
 
 .hero { text-align: center; padding: 24px 0 56px; display: flex; flex-direction: column; align-items: center; gap: 16px; }
-.hero h1 { font-size: 40px; font-weight: 700; letter-spacing: -.03em; line-height: 1.15; max-width: 760px; background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.hero h1 { font-size: 40px; font-weight: 700; letter-spacing: -.03em; line-height: 1.15; max-width: 760px; background: var(--grad-text); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .hero p { color: var(--muted); font-size: 17px; max-width: 640px; line-height: 1.65; }
 
 .section { margin-bottom: 56px; }

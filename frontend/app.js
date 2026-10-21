@@ -302,7 +302,6 @@ const chat = {
 
     skeleton() {
         chat.inner.replaceChildren(...[0, 1, 2].map((i) => el("div", { class: `message ${i % 2 ? "bot-message" : "user-message"} skeleton-message` }, [
-            el("div", { class: "avatar skeleton" }),
             el("div", { class: "message-content" }, [
                 el("div", { class: "skeleton skeleton-line", style: "width:" + (i % 2 ? "70%" : "40%") }),
                 el("div", { class: "skeleton skeleton-line", style: "width:" + (i % 2 ? "92%" : "25%") }),
@@ -329,19 +328,13 @@ const chat = {
         chat.scroll(true);
     },
 
-    /** Assistant card used both for history and live streaming. */
-    addAssistant({ route = "", time } = {}) {
+    /** Assistant answer (plain text on the page, no box), used both for
+     *  history and live streaming. The route shows in the footer trace. */
+    addAssistant({ route = "" } = {}) {
         chat.removeHero();
-        const badge = el("span", { class: "route-badge", hidden: true });
-        const head = el("div", { class: "answer-head" }, [
-            el("strong", { text: "Assistant" }),
-            badge,
-            el("span", { class: "message-time", text: chat.timeLabel(time) }),
-        ]);
         const body = el("div", { class: "answer-body" });
-        const card = el("div", { class: "answer-card" }, [head, body]);
+        const card = el("div", { class: "answer-card" }, [body]);
         const wrap = el("div", { class: "message bot-message" }, [
-            el("div", { class: "avatar bot-avatar", "aria-hidden": "true", html: '<img src="/frontend/assets/logo/logo.svg" width="20" height="20" alt="">' }),
             el("div", { class: "message-content" }, [card]),
         ]);
         chat.inner.append(wrap);
@@ -351,9 +344,6 @@ const chat = {
             setRoute(name) {
                 if (!ROUTES[name]) return;
                 card.className = `answer-card route-${name}`;
-                badge.className = `route-badge route-${name}`;
-                badge.textContent = ROUTES[name].label;
-                badge.hidden = false;
             },
             setText(markdown) {
                 api.text = markdown;
@@ -453,7 +443,6 @@ function createThinking() {
         strip,
     ]);
     const wrap = el("div", { class: "message bot-message thinking", role: "status", "aria-live": "polite" }, [
-        el("div", { class: "avatar bot-avatar", "aria-hidden": "true", html: '<img src="/frontend/assets/logo/logo.svg" width="20" height="20" alt="">' }),
         el("div", { class: "message-content" }, [panel]),
     ]);
     chat.inner.append(wrap);
@@ -592,7 +581,7 @@ async function openConversation(id) {
                     .filter((a) => a.file_type === "PDF" && a.file_id)
                     .forEach((a) => { contextPdfs.delete(a.file_id); contextPdfs.set(a.file_id, { fileId: a.file_id, name: a.filename }); });
             } else if (role === "ASSISTANT") {
-                const card = chat.addAssistant({ route: m.route, time: m.created_at });
+                const card = chat.addAssistant({ route: m.route });
                 card.setText(m.content || "");
                 card.setSources(m.metadata?.sources || []);
                 card.finish(m.route);
