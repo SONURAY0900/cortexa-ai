@@ -3,6 +3,7 @@ from pathlib import Path
 import pymupdf
 from pypdf import PdfReader
 
+from config import settings
 from rag.ingestion.ocr_processor import ocr_pdf_page
 from rag.ingestion.text_quality import suspicious_ratio
 from utils.logger import log_agent
@@ -147,6 +148,15 @@ def extract_text_from_pdf(file_path: str, progress=None) -> list[dict]:
 
     log_agent("PDF", f"{len(pages)} page(s): {len(pages) - len(ocr_pages)} with embedded text, "
                      f"{len(ocr_pages)} need OCR.")
+
+    # Each scanned page costs one OCR.space call (free quota, ~seconds each):
+    # past the cap, pages are reported unreadable instead of being sent.
+    limit = settings.MAX_OCR_PAGES
+    if limit and len(ocr_pages) > limit:
+        for page in ocr_pages[limit:]:
+            page.update(ocr_status="failed", ocr_error="OCR_LIMIT")
+        log_agent("OCR", f"{len(ocr_pages) - limit} scanned page(s) over the {limit}-page OCR limit are skipped.")
+        ocr_pages = ocr_pages[:limit]
 
     for index, page in enumerate(ocr_pages, start=1):
         number = page["page_number"]

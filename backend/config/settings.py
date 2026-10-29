@@ -50,6 +50,12 @@ MAX_PDF_MB = int(os.getenv("MAX_PDF_MB", "25"))
 MAX_IMAGE_MB = int(os.getenv("MAX_IMAGE_MB", "10"))
 MAX_AUDIO_MB = int(os.getenv("MAX_AUDIO_MB", "25"))
 
+# Large PDFs. Pages are indexed in batches, so memory no longer grows with
+# page count; these caps bound processing time and OCR quota instead.
+MAX_PDF_PAGES = int(os.getenv("MAX_PDF_PAGES", "300"))
+MAX_OCR_PAGES = int(os.getenv("MAX_OCR_PAGES", "50"))        # scanned pages read per PDF; 0 = no cap
+PDF_MAX_CONCURRENT = int(os.getenv("PDF_MAX_CONCURRENT", "1"))  # PDFs indexed at the same time
+
 # Per-request timeout (seconds) and retries for every Groq call. The SDK
 # default (10 minutes) would let one hung call hold a worker thread.
 GROQ_TIMEOUT_S = float(os.getenv("GROQ_TIMEOUT_S", "60"))
@@ -83,3 +89,10 @@ BREVO_API_KEY = os.getenv("BREVO_API_KEY", "")
 # counted both per guest id and per client IP, so anonymous use cannot
 # exhaust the Groq quota. 0 disables guest chat entirely.
 GUEST_MESSAGES_PER_HOUR = int(os.getenv("GUEST_MESSAGES_PER_HOUR", "20"))
+
+# Signed-in users: actions per rolling hour, per account. They protect the
+# shared Groq, OCR.space and memory budget from one heavy user. 0 = no limit.
+CHAT_MESSAGES_PER_HOUR = int(os.getenv("CHAT_MESSAGES_PER_HOUR", "60"))
+PDF_UPLOADS_PER_HOUR = int(os.getenv("PDF_UPLOADS_PER_HOUR", "10"))
+IMAGE_UPLOADS_PER_HOUR = int(os.getenv("IMAGE_UPLOADS_PER_HOUR", "20"))
+VOICE_REQUESTS_PER_HOUR = int(os.getenv("VOICE_REQUESTS_PER_HOUR", "30"))

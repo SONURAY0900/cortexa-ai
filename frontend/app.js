@@ -24,6 +24,7 @@ const SUGGESTIONS = [
 // Real backend ingestion stages, in order ("ocr" carries page progress).
 const PDF_STAGE_LABELS = {
     upload: "Uploading",
+    queued: "Waiting for another PDF to finish",
     extracting: "Extracting embedded text",
     ocr: "Reading scanned pages",
     chunking: "Chunking",

@@ -43,7 +43,9 @@ from config.settings import (
     EMAIL_OTP_RESEND_S,
     MAX_AUDIO_MB,
     MAX_IMAGE_MB,
+    MAX_OCR_PAGES,
     MAX_PDF_MB,
+    MAX_PDF_PAGES,
     SUPABASE_PUBLISHABLE_KEY,
     SUPABASE_URL,
 )
@@ -604,7 +606,28 @@ async def _read_upload(file: UploadFile, max_mb: int, kind: str) -> bytes:
 # PDF UPLOAD
 # ============================================================
 
+# Per-hour limits for signed-in users (services/guest_limits.py).
+RATE_LIMIT_MESSAGES = {
+    "chat": "You've sent a lot of messages this hour. Please try again in about {minutes} min.",
+    "pdf": "You've uploaded a lot of PDFs this hour. Please try again in about {minutes} min.",
+    "image": "You've uploaded a lot of images this hour. Please try again in about {minutes} min.",
+    "voice": "You've sent a lot of voice messages this hour. Please try again in about {minutes} min.",
+}
+
+
+def _check_rate(user, action: str) -> None:
+    """429 with Retry-After when a signed-in user is over an hourly limit."""
+    wait = guest_limits.allow_user(action, _user_id(user))
+    if wait:
+        raise HTTPException(
+            status_code=429,
+            detail=RATE_LIMIT_MESSAGES[action].format(minutes=-(-wait // 60)),
+            headers={"Retry-After": str(wait)},
+        )
+
+
 PDF_STAGE_LABELS = {
+    "queued": "Waiting for another PDF to finish",
     "uploaded": "Uploaded",
     "extracting": "Extracting embedded text",
     "ocr": "Reading scanned pages (OCR)",
@@ -621,6 +644,7 @@ PDF_FAILURE_MESSAGES = {
     "indexing_failed": "The PDF was read, but saving it for search failed. Please try again.",
     "invalid_pdf": "This PDF could not be opened. Please try another file.",
     "cancelled": "The upload was removed.",
+    "too_many_pages": f"This PDF has more than {MAX_PDF_PAGES} pages. Please split it into smaller PDFs and upload them separately.",
 }
 PDF_FAILURE_DEFAULT = "PDF processing failed. Please try another file."
 
@@ -640,12 +664,16 @@ def _file_was_deleted(file_id: str) -> bool:
 def _pdf_result_message(summary: dict) -> str:
     failed = summary.get("failed_pages") or []
     if summary.get("partial") and failed:
-        pages = ", ".join(str(n) for n in failed)
+        shown = ", ".join(str(n) for n in failed[:10])
+        pages = f"{shown} and {len(failed) - 10} more" if len(failed) > 10 else shown
         plural = len(failed) > 1
-        return (
+        message = (
             f"PDF processed with missing pages: page{'s' if plural else ''} {pages} "
             f"could not be read and {'are' if plural else 'is'} not searchable."
         )
+        if summary.get("pages_over_ocr_limit"):
+            message += f" Only the first {MAX_OCR_PAGES} scanned pages of a PDF are read."
+        return message
     return "PDF uploaded and processed successfully."
 
 
@@ -673,6 +701,7 @@ async def upload_pdf(
     lines, and a final "done" or "error" event.
     """
 
+    _check_rate(user, "pdf")
     original_filename = safe_display_name(file.filename)
 
     if not original_filename.lower().endswith(".pdf"):
@@ -814,6 +843,7 @@ async def upload_image(
     only this user can attach to a chat message.
     """
 
+    _check_rate(user, "image")
     original_filename = safe_display_name(file.filename)
     extension = Path(original_filename).suffix.lower()
 
@@ -929,6 +959,7 @@ async def transcribe_voice(
     The frontend then sends the returned text to /chat/stream.
     """
 
+    _check_rate(user, "voice")
     original_filename = safe_display_name(file.filename)
 
     if Path(original_filename).suffix.lower() not in AUDIO_EXTENSIONS:
@@ -1176,6 +1207,7 @@ def chat(request: ChatRequest, user=Depends(get_current_user)):
     one PDF and one image; the first of each attachment kind is used.
     """
 
+    _check_rate(user, "chat")
     plan = _plan_attachments(request, user)
 
     conversation = _get_or_create_conversation(
@@ -1288,6 +1320,8 @@ def chat_stream(request: ChatRequest, http_request: Request, user=Depends(get_us
                 status_code=429,
                 detail="You've reached the guest chat limit for now. Log in to keep chatting.",
             )
+    else:
+        _check_rate(user, "chat")
 
     # Every file is resolved by ID and ownership before anything runs.
     plan = _plan_attachments(request, user)

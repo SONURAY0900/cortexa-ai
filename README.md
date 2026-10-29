@@ -229,15 +229,23 @@ flowchart TD
     Q -->|"no"| O["render page image, OCR.space<br/>engine 2, fallback engine 3,<br/>retries with backoff"]
     O --> C
     C --> K["chunk per page<br/>700 chars, 120 overlap"]
-    K --> EM["embed chunks (384-dim)"]
-    EM --> ST["store document + chunks"]
+    K --> EM["embed chunks (384-dim)<br/>64 at a time"]
+    EM --> ST["store each batch"]
     ST --> R{"outcome"}
     R -->|"all pages ok"| OK["COMPLETED"]
     R -->|"some pages failed"| P["COMPLETED, partial:<br/>failed pages listed"]
     R -->|"no text at all / OCR failed"| F["FAILED, nothing indexed"]
 ```
 
-- Only pages without embedded text are sent to OCR.
+- Only pages without embedded text are sent to OCR, and at most
+  `MAX_OCR_PAGES` (50) per PDF; scanned pages beyond that are reported as
+  not searchable.
+- PDFs over `MAX_PDF_PAGES` (300) are rejected up front with a clear message.
+- Chunks are embedded and stored 64 at a time, so memory stays flat and no
+  single database request grows with the PDF. Measured locally: a 600-page
+  PDF (2,400 chunks) peaked at about 310 MB for the whole process.
+- Only `PDF_MAX_CONCURRENT` (1) PDF is indexed at a time; another upload
+  waits and shows "Waiting for another PDF to finish".
 - A page counts as `success`, `empty` (OCR worked but found no text) or `failed`.
 - If embedding or storage fails, the document is rolled back, so no
   half-indexed document is left behind.
@@ -680,6 +688,8 @@ Defined in `backend/.env` (never committed). The template is
 | `MAX_PDF_MB` / `MAX_IMAGE_MB` / `MAX_AUDIO_MB` | no | upload limits (25 / 10 / 25) |
 | `GROQ_TIMEOUT_S` / `GROQ_MAX_RETRIES` | no | Groq request timeout and retries (60 / 2) |
 | `GUEST_MESSAGES_PER_HOUR` | no | messages a guest (per guest id and per IP) may send per hour (20; `0` disables guest chat) |
+| `CHAT_MESSAGES_PER_HOUR` / `PDF_UPLOADS_PER_HOUR` / `IMAGE_UPLOADS_PER_HOUR` / `VOICE_REQUESTS_PER_HOUR` | no | per-account hourly limits for signed-in users (60 / 10 / 20 / 30; `0` = no limit). Over the limit the API returns 429 with `Retry-After`. Counted in memory per process. |
+| `MAX_PDF_PAGES` / `MAX_OCR_PAGES` / `PDF_MAX_CONCURRENT` | no | page cap per PDF, scanned pages sent to OCR per PDF, PDFs indexed at once (300 / 50 / 1) |
 | `EMAIL_OTP_EXPIRY_S` / `EMAIL_OTP_RESEND_S` | no | countdowns in the code dialog (600 / 60). Display only: keep them equal to the Supabase settings, which are what enforce expiry and resend limits. |
 | `WELCOME_EMAIL_PROVIDER` | no | `smtp`, `resend` or `brevo`; empty disables welcome emails |
 | `EMAIL_FROM` | with a provider | sender, e.g. `Cortexa AI <no-reply@your-domain.com>` |
@@ -833,6 +843,7 @@ The second command runs from the repository root and needs Node.js 18+.
 | `tests/test_pdf_chat.py` | PDF questions in the chat stream: one grounded LLM call, "not found" without any LLM call, follow-up search text, history limit, image context, rate-limit message |
 | `tests/test_guest_chat.py` | guest identity, invalid token never downgraded, uploads still need login, guest-only conversation filters, guest chat stream, per-guest/per-IP hourly limit, claiming guest chats (order, filters, empty, invalid id) |
 | `tests/test_attachments_profile.py` | attachment ownership, profile endpoints |
+| `tests/test_large_pdf_and_limits.py` | batched indexing of a 400-chunk PDF, rollback when a batch fails, page cap, waiting for a busy slot, OCR page cap, per-user hourly limits and 429 on chat and uploads |
 | `tests/test_charts.py` | chart rules in the answer prompts, per-day dashboard counts (UTC days, empty days, invalid times) |
 | `tests/frontend/charts.test.js` | chart spec validation (malformed JSON, caps on labels/series/text, number cleaning), axis ticks, number formatting |
 

@@ -25,7 +25,12 @@ Outcome rules
   kept and IngestionError is raised with a reason and the summary.
 """
 
+import threading
 from pathlib import Path
+
+from pypdf import PdfReader
+
+from config import settings
 
 from rag.ingestion.document_processor import (
     process_document
@@ -48,11 +53,20 @@ from rag.retrieval.vector_store import (
 from database.connection import supabase
 
 
+# Chunks embedded and stored per batch: memory stays flat however many
+# pages the PDF has, and no single insert request grows with the PDF.
+BATCH_CHUNKS = 64
+
+# PDFs indexed at the same time; the others wait for a free slot.
+_ingest_slots = threading.BoundedSemaphore(max(1, settings.PDF_MAX_CONCURRENT))
+
+
 class IngestionError(Exception):
     """
     Ingestion did not produce a searchable document.
 
     reason: "no_text" | "ocr_failed" | "indexing_failed" | "invalid_pdf"
+            | "too_many_pages"
     summary: processing summary (see build_summary), when available.
     """
 
@@ -77,6 +91,7 @@ def build_summary(pages: list[dict]) -> dict:
         "pages_ocr_succeeded": sum(1 for p in ocr_pages if p.get("ocr_status") == "success"),
         "failed_pages": failed,
         "pages_without_text": empty,
+        "pages_over_ocr_limit": [p["page_number"] for p in ocr_pages if p.get("ocr_error") == "OCR_LIMIT"],
         "pages_with_text": with_text,
         "pages_indexed": [],
         "chunks": 0,
@@ -99,7 +114,8 @@ def ingest_pdf_with_summary(
     cannot be made searchable; nothing is left in the database then.
 
     progress: optional callable(stage, details) reporting real pipeline
-    stages ("extracting", "ocr", "chunking", "embedding", "indexing").
+    stages ("queued", "extracting", "ocr", "chunking", "embedding",
+    "indexing").
     """
 
     pdf_path = Path(file_path)
@@ -111,6 +127,32 @@ def ingest_pdf_with_summary(
 
     report = progress or (lambda stage, details=None: None)
 
+    pages_total = _page_count(pdf_path)
+    if pages_total and settings.MAX_PDF_PAGES and pages_total > settings.MAX_PDF_PAGES:
+        raise IngestionError(
+            "too_many_pages",
+            f"{pages_total} pages; the limit is {settings.MAX_PDF_PAGES}.",
+            {"pages_total": pages_total, "max_pages": settings.MAX_PDF_PAGES},
+        )
+
+    if not _ingest_slots.acquire(blocking=False):
+        report("queued")
+        _ingest_slots.acquire()
+    try:
+        return _ingest(pdf_path, filename, user_id, report, file_id)
+    finally:
+        _ingest_slots.release()
+
+
+def _page_count(pdf_path: Path) -> int | None:
+    """Page count without extracting text; None if pypdf can't tell."""
+    try:
+        return len(PdfReader(str(pdf_path)).pages)
+    except Exception:
+        return None     # process_document reports unreadable PDFs
+
+
+def _ingest(pdf_path: Path, filename: str, user_id, report, file_id) -> tuple[str, dict]:
     # ========================================================
     # STEP 1: DOCUMENT PROCESSING
     # ========================================================
@@ -233,48 +275,32 @@ def _chunk_embed_and_store(
         )
 
     # ========================================================
-    # STEP 4: EMBEDDINGS
+    # STEP 4: EMBED + STORE, one batch at a time
     # ========================================================
 
-    report("embedding", {"chunks": len(all_chunks)})
+    total = len(all_chunks)
 
-    texts = [
-        chunk["content"]
-        for chunk in all_chunks
-    ]
+    for start in range(0, total, BATCH_CHUNKS):
 
-    embeddings = generate_embeddings(
-        texts
-    )
+        batch = all_chunks[start:start + BATCH_CHUNKS]
+        report("embedding", {"chunks": total, "done": start})
 
-    if len(embeddings) != len(
-        all_chunks
-    ):
-        raise RuntimeError(
-            "Number of embeddings does not "
-            "match number of chunks."
+        embeddings = generate_embeddings(
+            [chunk["content"] for chunk in batch]
         )
 
-    # ========================================================
-    # STEP 5: ATTACH EMBEDDINGS
-    # ========================================================
+        if len(embeddings) != len(batch):
+            raise RuntimeError(
+                "Number of embeddings does not "
+                "match number of chunks."
+            )
 
-    for chunk, embedding in zip(
-        all_chunks,
-        embeddings
-    ):
+        report("indexing", {"chunks": total, "done": start})
 
-        chunk["embedding"] = embedding
+        store_chunks(
+            document_id=document_id,
+            chunks=[{**chunk, "embedding": embedding} for chunk, embedding in zip(batch, embeddings)]
+        )
 
-    # ========================================================
-    # STEP 6: STORE
-    # ========================================================
-
-    report("indexing", {"chunks": len(all_chunks)})
-
-    store_chunks(
-        document_id=document_id,
-        chunks=all_chunks
-    )
-
+    # Text and page numbers only; the vectors were freed batch by batch.
     return all_chunks
