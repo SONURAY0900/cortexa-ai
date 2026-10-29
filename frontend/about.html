@@ -9,8 +9,8 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Instrument+Serif:ital@1&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/frontend/style.css?v=1.8.2">
-    <link rel="stylesheet" href="/frontend/about.css?v=1.8.2">
+    <link rel="stylesheet" href="/frontend/style.css?v=1.8.3">
+    <link rel="stylesheet" href="/frontend/about.css?v=1.8.3">
 </head>
 <body class="about-page">
 
@@ -308,26 +308,8 @@
         <div class="app-footer-credit">Powered by <strong>Cortexa AI</strong> <span aria-hidden="true">·</span> Made by <strong>Sonu Ray</strong></div>
     </footer>
 
-    <script src="/frontend/auth-flows.js?v=1.8.2"></script>
-    <script src="/frontend/common.js?v=1.8.2"></script>
-    <script>
-        // Reveal sections as they scroll into view.
-        (function () {
-            const sections = document.querySelectorAll(".reveal");
-            if (!("IntersectionObserver" in window)) {
-                sections.forEach((s) => s.classList.add("visible"));
-                return;
-            }
-            const observer = new IntersectionObserver((entries) => {
-                entries.forEach((entry) => {
-                    if (entry.isIntersecting) {
-                        entry.target.classList.add("visible");
-                        observer.unobserve(entry.target);
-                    }
-                });
-            }, { threshold: 0.12 });
-            sections.forEach((s) => observer.observe(s));
-        })();
-    </script>
+    <script src="/frontend/auth-flows.js?v=1.8.3"></script>
+    <script src="/frontend/common.js?v=1.8.3"></script>
+    <script src="/frontend/about.js?v=1.8.3"></script>
 </body>
 </html>

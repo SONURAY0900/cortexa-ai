@@ -528,7 +528,12 @@ Migration `20261010_protect_profile_role.sql` stops anyone from changing
   ownership on the server, and the server never accepts a filesystem path from
   the browser.
 - **Uploads:** size limits (`MAX_*_MB`), PDF magic-byte check, UUID-prefixed
-  sanitized file names, and deletion confined to `backend/uploads/`.
+  sanitized file names, and deletion confined to `backend/uploads/`. Requests
+  whose declared size is over the largest upload limit (413), or that send a
+  body without a declared size (411), are refused from the headers, before the
+  body is received or spooled to disk.
+- **Rate limits:** guests per guest id and IP; signed-in users per account for
+  chat, PDF, image and voice (see Environment variables). 429 + `Retry-After`.
 - **Secrets stay on the server.** The browser only receives the publishable
   key. Email-provider keys (`SMTP_PASSWORD`, `RESEND_API_KEY`,
   `BREVO_API_KEY`) are read by the backend only. `.env` is git-ignored, and
@@ -541,9 +546,14 @@ Migration `20261010_protect_profile_role.sql` stops anyone from changing
 - **Output:** markdown is HTML-escaped before rendering, and only `http(s)`
   links are rendered.
 - **Headers:** `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
-  `Referrer-Policy: strict-origin-when-cross-origin`.
+  `Referrer-Policy: strict-origin-when-cross-origin`, a
+  `Content-Security-Policy` (scripts only from this site and the two pinned,
+  SRI-checked CDNs; no inline scripts or eval; no framing; no plugins), a
+  `Permissions-Policy` (microphone only for this site), and HSTS in production.
+  Pages must not contain inline `<script>` blocks (a test checks this).
 - **CORS:** off by default and enabled only for `ALLOWED_ORIGINS`.
-- **Production** (`APP_ENV=production`) disables `/docs` and `/openapi.json`.
+- **Production** (`APP_ENV=production`, or any Render deploy, detected from
+  Render's `RENDER` variable) disables `/docs` and `/openapi.json`.
 - **Timeouts** are set on all external calls: Groq (`GROQ_TIMEOUT_S`),
   OCR.space, Supabase HTTP and Wikipedia.
 - **Errors:** unexpected errors return a generic message, and details go to the
@@ -689,6 +699,7 @@ Defined in `backend/.env` (never committed). The template is
 | `GROQ_TIMEOUT_S` / `GROQ_MAX_RETRIES` | no | Groq request timeout and retries (60 / 2) |
 | `GUEST_MESSAGES_PER_HOUR` | no | messages a guest (per guest id and per IP) may send per hour (20; `0` disables guest chat) |
 | `CHAT_MESSAGES_PER_HOUR` / `PDF_UPLOADS_PER_HOUR` / `IMAGE_UPLOADS_PER_HOUR` / `VOICE_REQUESTS_PER_HOUR` | no | per-account hourly limits for signed-in users (60 / 10 / 20 / 30; `0` = no limit). Over the limit the API returns 429 with `Retry-After`. Counted in memory per process. |
+| `WORKER_THREADS` | no | threads for blocking work (200). A streaming answer holds one while it waits on Groq, so this is about how many people can be answered at once |
 | `MAX_PDF_PAGES` / `MAX_OCR_PAGES` / `PDF_MAX_CONCURRENT` | no | page cap per PDF, scanned pages sent to OCR per PDF, PDFs indexed at once (300 / 50 / 1) |
 | `EMAIL_OTP_EXPIRY_S` / `EMAIL_OTP_RESEND_S` | no | countdowns in the code dialog (600 / 60). Display only: keep them equal to the Supabase settings, which are what enforce expiry and resend limits. |
 | `WELCOME_EMAIL_PROVIDER` | no | `smtp`, `resend` or `brevo`; empty disables welcome emails |
@@ -844,6 +855,7 @@ The second command runs from the repository root and needs Node.js 18+.
 | `tests/test_guest_chat.py` | guest identity, invalid token never downgraded, uploads still need login, guest-only conversation filters, guest chat stream, per-guest/per-IP hourly limit, claiming guest chats (order, filters, empty, invalid id) |
 | `tests/test_attachments_profile.py` | attachment ownership, profile endpoints |
 | `tests/test_large_pdf_and_limits.py` | batched indexing of a 400-chunk PDF, rollback when a batch fails, page cap, waiting for a busy slot, OCR page cap, per-user hourly limits and 429 on chat and uploads |
+| `tests/test_hardening.py` | oversized and size-less request bodies refused, security headers (CSP without inline scripts, Permissions-Policy, HSTS only in production), no inline scripts in pages, worker pool size at startup |
 | `tests/test_charts.py` | chart rules in the answer prompts, per-day dashboard counts (UTC days, empty days, invalid times) |
 | `tests/frontend/charts.test.js` | chart spec validation (malformed JSON, caps on labels/series/text, number cleaning), axis ticks, number formatting |
 

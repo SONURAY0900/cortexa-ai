@@ -56,6 +56,11 @@ MAX_PDF_PAGES = int(os.getenv("MAX_PDF_PAGES", "300"))
 MAX_OCR_PAGES = int(os.getenv("MAX_OCR_PAGES", "50"))        # scanned pages read per PDF; 0 = no cap
 PDF_MAX_CONCURRENT = int(os.getenv("PDF_MAX_CONCURRENT", "1"))  # PDFs indexed at the same time
 
+# Threads for blocking work (Supabase, Groq). A streaming answer holds one
+# while it waits on Groq, so this is roughly how many people can be
+# answered at the same time. Waiting threads use almost no CPU.
+WORKER_THREADS = int(os.getenv("WORKER_THREADS", "200"))
+
 # Per-request timeout (seconds) and retries for every Groq call. The SDK
 # default (10 minutes) would let one hung call hold a worker thread.
 GROQ_TIMEOUT_S = float(os.getenv("GROQ_TIMEOUT_S", "60"))

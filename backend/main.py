@@ -1,11 +1,14 @@
 import io
 import json
+import os
 import queue
 import threading
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import UUID
 
+import anyio
 from fastapi import (
     FastAPI,
     UploadFile,
@@ -48,6 +51,7 @@ from config.settings import (
     MAX_PDF_PAGES,
     SUPABASE_PUBLISHABLE_KEY,
     SUPABASE_URL,
+    WORKER_THREADS,
 )
 from database.connection import supabase
 from rag.pipeline import IngestionError, ingest_pdf_with_summary
@@ -83,9 +87,21 @@ from utils.logger import log_agent
 # FASTAPI APP
 # ============================================================
 
-IS_PRODUCTION = APP_ENV.lower() == "production"
+# Render sets RENDER=true, so a deploy without APP_ENV is still treated as
+# production (API docs off, HSTS on).
+IS_PRODUCTION = APP_ENV.lower() == "production" or bool(os.getenv("RENDER"))
+
+
+@asynccontextmanager
+async def lifespan(app):
+    # Default pool is 40 threads: with more people streaming answers than
+    # that, new answers waited for someone else's to finish.
+    anyio.to_thread.current_default_thread_limiter().total_tokens = WORKER_THREADS
+    yield
+
 
 app = FastAPI(
+    lifespan=lifespan,
     title="Cortexa AI",
     description="Cortexa AI: multi-agent assistant built with LangGraph, LangChain and Groq",
     version=APP_VERSION,
@@ -112,12 +128,46 @@ if ALLOWED_ORIGINS:
     )
 
 
+# Scripts only from this site and the two pinned CDNs (loaded with SRI);
+# no inline scripts. Inline style attributes are used by the UI.
+CONTENT_SECURITY_POLICY = "; ".join([
+    "default-src 'self'",
+    "script-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com",
+    "img-src 'self' data: blob: https://*.googleusercontent.com",
+    # cdnjs: the PDF.js worker is downloaded and checked against its SRI hash.
+    f"connect-src 'self' https://cdnjs.cloudflare.com {SUPABASE_URL or ''}".strip(),
+    "worker-src 'self' blob: https://cdnjs.cloudflare.com",
+    "media-src 'self' blob:",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+])
+
+# Largest upload allowed, plus room for the multipart wrapper. Checked from
+# the headers, before the body is received and spooled to disk.
+MAX_REQUEST_BYTES = (max(MAX_PDF_MB, MAX_IMAGE_MB, MAX_AUDIO_MB) + 1) * 1024 * 1024
+
+
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
+    if "chunked" in request.headers.get("transfer-encoding", "").lower():
+        # No declared size: the body could be endless.
+        return JSONResponse(status_code=411, content={"detail": "Please send the file with a known size."})
+    length = request.headers.get("content-length")
+    if length and (not length.isdigit() or int(length) > MAX_REQUEST_BYTES):
+        return JSONResponse(status_code=413, content={"detail": "The upload is too large."})
+
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Content-Security-Policy", CONTENT_SECURITY_POLICY)
+    response.headers.setdefault("Permissions-Policy", "microphone=(self), camera=(), geolocation=(), payment=()")
+    if IS_PRODUCTION:
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     return response
 
 
