@@ -92,15 +92,41 @@ class StreamedPdfAnswer(unittest.TestCase):
         saved_answer = self.saved.call_args_list[-1]
         self.assertEqual(saved_answer.args[2:4], ("ASSISTANT", "Pop removes the top element."))
 
-    def test_nothing_found_answers_without_any_llm_call(self):
+    def general_answer(self, retrieval, pdf_reply):
+        """Ask a general question; the web search route answers it."""
         llm = mock.Mock()
-        llm.stream.side_effect = AssertionError("LLM called")
-        with mock.patch.object(main, "retrieve_pdf_context", return_value=self.retrieval(found=False)), \
-                mock.patch.object(rag, "rag_llm", llm):
+        llm.stream.return_value = chunks(*pdf_reply)
+        tavily = mock.Mock(return_value={"content": "Argentina won in 2022.",
+                                         "sources": [{"title": "FIFA", "url": "https://fifa.com"}]})
+        general = mock.Mock(return_value=iter(["Argentina ", "won the 2022 World Cup."]))   # yields text
+        with mock.patch.object(main, "retrieve_pdf_context", return_value=retrieval), \
+                mock.patch.object(rag, "rag_llm", llm), \
+                mock.patch.object(main, "route_query", return_value=SimpleNamespace(route="TAVILY", reason="current")), \
+                mock.patch.dict(main.SEARCH_AGENTS, {"TAVILY": (tavily, "Searching the web")}), \
+                mock.patch.object(main, "stream_response", general):
             evts = events(self.ask("Who won the World Cup?"))
+        return evts, llm, general
+
+    def assert_general_answer(self, evts):
         text = "".join(e["content"] for e in evts if e["type"] == "content")
-        self.assertEqual(text, rag.NOT_FOUND)
+        self.assertTrue(text.startswith("**This isn't covered in your PDF**, so here's an answer from a web search"))
+        self.assertTrue(text.endswith("Argentina won the 2022 World Cup."))
+        self.assertNotIn("NOT_IN_PDF", text)
+        self.assertEqual([e["route"] for e in evts if e["type"] == "route"], ["PDF_RAG", "TAVILY"])
+        sources = next(e for e in evts if e["type"] == "sources")["sources"]
+        self.assertEqual(sources, [{"title": "FIFA", "url": "https://fifa.com"}])   # not the PDF pages
+        self.assertEqual(self.saved.call_args_list[-1].args[3], text)
         self.assertEqual(evts[-1]["type"], "done")
+
+    def test_nothing_found_in_the_pdf_is_answered_from_other_sources(self):
+        evts, llm, general = self.general_answer(self.retrieval(found=False), ["unused"])
+        llm.stream.assert_not_called()                                # no PDF call without PDF text
+        self.assert_general_answer(evts)
+
+    def test_a_general_question_the_pdf_does_not_cover(self):
+        evts, llm, general = self.general_answer(self.retrieval(), ["NOT_", "IN_PDF"])
+        self.assertEqual(llm.stream.call_count, 1)
+        self.assert_general_answer(evts)
 
     def test_rate_limit_shows_busy_message(self):
         class RateLimited(Exception):
@@ -200,14 +226,24 @@ class PdfPrompt(unittest.TestCase):
         self.assertIn("pdf text\n\nAttached image analysis:\nOCR: hello", prompt)
 
     def test_rag_agent_keeps_its_contract(self):
-        with mock.patch.object(rag, "retrieve_context", return_value={"context": "", "context_chunks": []}):
-            self.assertEqual(rag.rag_agent("q", document_id="d")["answer"], rag.NOT_FOUND)
-        with mock.patch.object(rag, "retrieve_context", return_value={
-                "context": "[Source 1 | Page 2 | Chunk 0]\ntext", "context_chunks": [{"page_number": 2, "content": "text"}]}), \
+        found = {"context": "[Source 1 | Page 2 | Chunk 0]\ntext", "context_chunks": [{"page_number": 2, "content": "text"}]}
+        with mock.patch.object(rag, "retrieve_context", return_value=found), \
                 mock.patch.object(rag, "rag_llm", mock.Mock(invoke=mock.Mock(return_value=SimpleNamespace(content="answer")))):
             result = rag.rag_agent("q", document_id="d")
         self.assertEqual(result["answer"], "answer")
         self.assertEqual(result["sources"][0]["page_number"], 2)
+
+    def test_rag_agent_answers_general_questions_the_pdf_does_not_cover(self):
+        found = {"context": "[Source 1 | Page 2 | Chunk 0]\ntext", "context_chunks": [{"page_number": 2, "content": "text"}]}
+        for retrieval, reply in (({"context": "", "context_chunks": []}, "unused"), (found, "NOT_IN_PDF")):
+            with self.subTest(reply=reply), \
+                    mock.patch.object(rag, "retrieve_context", return_value=retrieval), \
+                    mock.patch.object(rag, "rag_llm", mock.Mock(invoke=mock.Mock(return_value=SimpleNamespace(content=reply)))), \
+                    mock.patch.object(rag, "generate_response", return_value="Paris."):
+                result = rag.rag_agent("Capital of France?", document_id="d")
+            self.assertTrue(result["answer"].startswith("**This isn't covered in your PDF**"))
+            self.assertTrue(result["answer"].endswith("Paris."))
+            self.assertEqual(result["sources"], [])
 
 
 if __name__ == "__main__":

@@ -65,6 +65,10 @@ WORKER_THREADS = int(os.getenv("WORKER_THREADS", "200"))
 # default (10 minutes) would let one hung call hold a worker thread.
 GROQ_TIMEOUT_S = float(os.getenv("GROQ_TIMEOUT_S", "60"))
 GROQ_MAX_RETRIES = int(os.getenv("GROQ_MAX_RETRIES", "2"))
+# gpt-oss "thinks" before answering, and that hidden reasoning counts as
+# output: at the default effort it used 2,955 of 3,072 output tokens on
+# "give all questions", cutting the visible answer off. low | medium | high.
+GROQ_REASONING_EFFORT = os.getenv("GROQ_REASONING_EFFORT", "low")
 
 # Email one-time-code sign-in. Supabase Auth issues, expires and verifies
 # every code: set "Email OTP expiration" to 600 seconds in the Supabase

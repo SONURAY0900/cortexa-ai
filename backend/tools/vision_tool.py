@@ -37,7 +37,8 @@ def encode_image(image_path: str) -> tuple[str, str]:
 
 def analyze_image(
     image_path: str,
-    query: str
+    query: str,
+    max_tokens: int = 600
 ) -> str:
 
     api_key = os.getenv("GROQ_API_KEY")
@@ -87,7 +88,11 @@ def analyze_image(
 
         temperature=0.2,
 
-        max_completion_tokens=1024
+        # Groq's free tier allows this model 1,000 output tokens per minute,
+        # counted from what is requested: 1,024 got requests rejected (429).
+        # 600 for an image analysis leaves room for a 300-token question read
+        # (rag/question_reader.py) in the same minute.
+        max_completion_tokens=max_tokens
     )
 
     return response.choices[0].message.content

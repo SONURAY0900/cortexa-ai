@@ -11,6 +11,7 @@ between them; analyze_image() runs both.
 
 from agents.ocr_agent import ocr_agent
 from agents.vision_agent import vision_agent
+from rag.ingestion.text_quality import script_share
 from utils.logger import log_agent
 
 
@@ -36,9 +37,21 @@ def combine(ocr_result: dict, vision_result: dict, label: str = "") -> dict:
 
     title = f"IMAGE ANALYSIS RESULT{f' ({label})' if label else ''}"
 
+    # OCR and the vision model read Latin script and Chinese well, but
+    # misread others (Odia, Hindi, ...): the answer then says to check.
+    caution = ""
+    if ocr_text.strip() and script_share(ocr_text, {"LATIN", "CJK"}) < 0.5:
+        caution = ("The text is in a script these readers often misread. Start the answer with one "
+                   "short line asking the user to check the question and options against the image.\n")
+
+    # The vision model misreads non-Latin scripts (it invented an Odia
+    # question and options), so the exact wording comes from OCR.
     tool_result = f"""
 {title}
-
+Use OCR TEXT for the exact wording of questions and options; if it and
+VISION ANALYSIS disagree, trust OCR TEXT. If the question cannot be read
+clearly, say which part is unreadable instead of guessing.
+{caution}
 OCR TEXT:
 {ocr_text}
 
@@ -53,6 +66,7 @@ VISION ANALYSIS:
         "ocr_ok": not ocr_result.get("error"),
         "vision_ok": not vision_result.get("error"),
         "error": "\n".join(errors),
+        "unreliable_script": bool(caution),
     }
 
 

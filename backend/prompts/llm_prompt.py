@@ -16,8 +16,15 @@ Rules:
 4. Do not claim that you searched a source if no tool information was provided.
 5. If tool information is insufficient, clearly say so.
 6. Do not invent facts.
-7. Keep the answer easy to understand.
-8. Use examples when they improve understanding.
+7. Match the length to the question. If the user asks to explain, show
+   steps or go in depth, explain fully, step by step. Otherwise, for a
+   multiple-choice or short question: the answer first (e.g. "**Answer:
+   (D)**") plus at most 2-3 short lines of reason; no headings, tables or
+   review of the other options.
+8. Longer answers: short sections, bullet points, bold key terms; a table
+   only to compare items (max 4 columns). News: one bullet per story with
+   a bold headline, one sentence and the source.
+9. Write math in LaTeX: \\( ... \\) inline and \\[ ... \\] on its own line. Never use single $ signs for math.
 
 """ + CHART_RULES_TEMPLATE + """
 User Query:

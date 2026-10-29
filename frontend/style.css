@@ -41,6 +41,7 @@
     --shadow: 0 4px 24px rgba(11, 11, 11, 0.06);
     --shadow-lg: 0 24px 64px rgba(11, 11, 11, 0.18);
     --radius: 14px;
+    --chat-width: 1040px;   /* messages, input box and attachment bar */
     --radius-sm: 10px;
     --ease: cubic-bezier(.2, .8, .2, 1);
 
@@ -349,7 +350,7 @@ button, input, textarea, select { font: inherit; color: inherit; }
 /* ================= CHAT ================= */
 .main { flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; }
 .chat-messages { flex: 1; overflow-y: auto; padding: 28px 20px 12px; scroll-behavior: smooth; overscroll-behavior: contain; }
-.chat-inner { max-width: 860px; margin: 0 auto; }
+.chat-inner { max-width: var(--chat-width); margin: 0 auto; }
 
 .hero-empty { text-align: center; padding: 7vh 0 20px; animation: fadeUp .5s var(--ease); }
 .hero-logo { display: inline-flex; margin-bottom: 18px; animation: float 4s ease-in-out infinite; filter: drop-shadow(0 10px 26px var(--glow)); }
@@ -408,9 +409,16 @@ button, input, textarea, select { font: inherit; color: inherit; }
 .code-block pre code { background: none; padding: 0; color: inherit; font-size: 12.5px; line-height: 1.6; }
 .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-solid); }
 .answer-body table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
-.answer-body th, .answer-body td { padding: 8px 12px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
-.answer-body th { background: var(--surface-2); font-weight: 600; }
+/* Cells wrap between words only (answer text may break anywhere, which
+   split short words like "Sourc-e"); a very wide table scrolls instead. */
+.answer-body th, .answer-body td { padding: 9px 14px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; overflow-wrap: normal; word-break: normal; }
+.answer-body th { background: var(--surface-2); font-weight: 600; white-space: nowrap; }
 .answer-body tr:last-child td { border-bottom: 0; }
+
+/* math (frontend/math.js): raw TeX until KaTeX draws it */
+.math { font-family: "JetBrains Mono", monospace; font-size: .92em; }
+.math .katex { font-family: KaTeX_Main, "Times New Roman", serif; font-size: 1.12em; }
+.math-display { display: block; margin: 12px 0; text-align: center; overflow-x: auto; overflow-y: hidden; }
 
 /* charts (frontend/charts.js) */
 .chart { margin: 18px 0 4px; position: relative; }
@@ -521,7 +529,7 @@ a.source-card:hover { border-color: var(--accent); transform: translateY(-2px); 
 /* ================= COMPOSER ================= */
 .input-wrap { padding: 8px 20px max(14px, env(safe-area-inset-bottom)); }
 .input-area {
-    max-width: 860px; margin: 0 auto;
+    max-width: var(--chat-width); margin: 0 auto;
     display: flex; align-items: flex-end; gap: 6px;
     background: var(--surface);
     -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px);
@@ -572,7 +580,7 @@ textarea#userInput.dimmed { opacity: .5; }
 .hint { text-align: center; font-size: 11.5px; color: var(--muted); margin-top: 8px; }
 
 /* composer attachments */
-.attachment-tray, .context-bar { max-width: 860px; margin: 0 auto 8px; display: flex; flex-wrap: wrap; gap: 8px; }
+.attachment-tray, .context-bar { max-width: var(--chat-width); margin: 0 auto 8px; display: flex; flex-wrap: wrap; gap: 8px; }
 .attach-card {
     position: relative;
     display: flex; flex-direction: column;

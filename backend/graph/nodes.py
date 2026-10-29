@@ -9,6 +9,7 @@ from agents.arxiv_agent import arxiv_agent
 from agents.rag_agent import rag_agent
 
 from services.image_analysis import analyze_image
+from utils.logger import log_agent
 
 
 # ============================================================
@@ -279,12 +280,18 @@ def image_node(state: ChatState):
 
         result = analyze_image(image_path, query)
 
+        # One working reader is enough to answer (as in /chat/stream); the
+        # error only replaces the result when both OCR and vision failed.
+        usable = result["ocr_ok"] or result["vision_ok"]
+        if result["error"]:
+            log_agent("IMAGE", f"Image analysis: {result['error']}")
+
         return {
             "tool_result": result["tool_result"],
             "image_ocr_text": result["ocr_text"],
             "image_vision_result": result["vision_answer"],
             "sources": [],
-            "error": result["error"]
+            "error": "" if usable else result["error"]
         }
 
     except Exception as e:

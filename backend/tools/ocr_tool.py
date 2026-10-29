@@ -1,11 +1,10 @@
 import os
 import io
 
-import requests
 from PIL import Image
 
+from rag.ingestion.ocr_processor import ocr_upload
 
-OCR_API_URL = "https://api.ocr.space/parse/image"
 
 # Maximum image dimensions sent to OCR.space
 MAX_WIDTH = 2000
@@ -88,151 +87,24 @@ def prepare_image(
 
 def extract_text_from_image(
     image_path: str,
-    language: str = "eng"
+    language: str | None = None
 ) -> str:
     """
-    Extract text from an image using OCR.space.
+    Extract text from an image with OCR.space.
+
+    Uses the same request logic as scanned PDF pages: automatic language,
+    retries, and the fallback engine when engine 2 returns little text or
+    text outside the scripts it auto-detects (Latin, Chinese). Engine 2
+    alone turned Odia into Thai and Devanagari look-alikes.
+
+    Returns "" when the image has no text; raises RuntimeError when OCR fails.
     """
 
-    api_key = os.getenv(
-        "OCR_SPACE_API_KEY"
-    )
+    image_bytes = prepare_image(image_path)
 
-    if not api_key:
+    result = ocr_upload(("image.jpg", image_bytes, "image/jpeg"), language=language, label="image")
 
-        raise RuntimeError(
-            "OCR_SPACE_API_KEY is not configured."
-        )
+    if result.status == "failed":
+        raise RuntimeError(f"OCR processing failed: {result.error or 'unknown error'}")
 
-    # ============================================================
-    # PREPARE IMAGE
-    # ============================================================
-
-    image_bytes = prepare_image(
-        image_path
-    )
-
-    # ============================================================
-    # SEND IMAGE TO OCR.SPACE
-    # ============================================================
-
-    try:
-
-        files = {
-            "file": (
-                "image.jpg",
-                image_bytes,
-                "image/jpeg"
-            )
-        }
-
-        data = {
-            "apikey": api_key,
-            "language": language,
-            "isOverlayRequired": "false",
-            "detectOrientation": "true",
-            "scale": "true",
-            "OCREngine": "2"
-        }
-
-        print(
-            "[OCR] Sending image to OCR.space..."
-        )
-
-        response = requests.post(
-            OCR_API_URL,
-            files=files,
-            data=data,
-            timeout=120
-        )
-
-        print(
-            f"[OCR] Response status: "
-            f"{response.status_code}"
-        )
-
-        if response.status_code != 200:
-
-            print(
-                "[OCR] OCR.space response:"
-            )
-
-            print(
-                response.text
-            )
-
-            response.raise_for_status()
-
-        result = response.json()
-
-    except requests.RequestException as e:
-
-        raise RuntimeError(
-            f"OCR service request failed: {str(e)}"
-        )
-
-    except ValueError as e:
-
-        raise RuntimeError(
-            f"Invalid OCR response: {str(e)}"
-        )
-
-    # ============================================================
-    # CHECK OCR ERROR
-    # ============================================================
-
-    if result.get(
-        "IsErroredOnProcessing"
-    ):
-
-        error_message = result.get(
-            "ErrorMessage",
-            "Unknown OCR processing error."
-        )
-
-        if isinstance(
-            error_message,
-            list
-        ):
-
-            error_message = " ".join(
-                str(message)
-                for message in error_message
-            )
-
-        raise RuntimeError(
-            f"OCR processing failed: "
-            f"{error_message}"
-        )
-
-    # ============================================================
-    # EXTRACT OCR TEXT
-    # ============================================================
-
-    parsed_results = result.get(
-        "ParsedResults",
-        []
-    )
-
-    if not parsed_results:
-
-        return ""
-
-    text_parts = []
-
-    for parsed_result in parsed_results:
-
-        parsed_text = parsed_result.get(
-            "ParsedText",
-            ""
-        )
-
-        if parsed_text:
-
-            text_parts.append(
-                parsed_text.strip()
-            )
-
-    return "\n\n".join(
-        text_parts
-    ).strip()
+    return result.text.strip()

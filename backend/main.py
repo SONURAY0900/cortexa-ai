@@ -32,7 +32,7 @@ from agents.llm_agent import stream_response
 from agents.wikipedia_agent import wikipedia_agent
 from agents.tavily_agent import tavily_agent
 from agents.arxiv_agent import arxiv_agent
-from agents.rag_agent import NOT_FOUND, retrieve_pdf_context, stream_pdf_answer
+from agents.rag_agent import not_in_pdf, retrieve_pdf_context, stream_pdf_answer
 from agents.speech_agent import speech_to_text_agent
 
 from account.routes import router as account_router
@@ -133,8 +133,9 @@ if ALLOWED_ORIGINS:
 CONTENT_SECURITY_POLICY = "; ".join([
     "default-src 'self'",
     "script-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
-    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-    "font-src 'self' https://fonts.gstatic.com",
+    # cdnjs: KaTeX's stylesheet and fonts (math in answers), SRI-pinned.
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com",
+    "font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com",
     "img-src 'self' data: blob: https://*.googleusercontent.com",
     # cdnjs: the PDF.js worker is downloaded and checked against its SRI hash.
     f"connect-src 'self' https://cdnjs.cloudflare.com {SUPABASE_URL or ''}".strip(),
@@ -584,7 +585,13 @@ def _plan_attachments(request: ChatRequest, user) -> AttachmentPlan:
                     status_code=409,
                     detail=f"“{row['filename']}” is not ready yet. Please wait until it has been processed.",
                 )
-            plan.documents.append({"id": document["id"], "filename": row["filename"]})
+            plan.documents.append({
+                "id": document["id"],
+                "filename": row["filename"],
+                # Stored file, for reading a question from its page image
+                # (None once the server's disk no longer has it).
+                "path": str(resolve_inside_uploads(row.get("storage_path")) or "") or None,
+            })
 
         elif row["file_type"] == FileType.IMAGE:
             # Images apply to the message they are attached to only.
@@ -1351,6 +1358,10 @@ SEARCH_AGENTS = {
 }
 
 
+# Named in the note that starts an answer the PDF did not cover.
+GENERAL_SOURCES = {"DIRECT": "general knowledge", "TAVILY": "a web search", "WIKIPEDIA": "Wikipedia", "ARXIV": "arXiv"}
+
+
 def _sse(payload: dict) -> str:
     return "data: " + json.dumps(payload) + "\n\n"
 
@@ -1440,6 +1451,7 @@ def chat_stream(request: ChatRequest, http_request: Request, user=Depends(get_us
             sources = []
             error = ""
             pdf_context = ""
+            general = False     # a general question the PDF does not cover
 
             if route in SEARCH_AGENTS:
                 agent, label = SEARCH_AGENTS[route]
@@ -1487,15 +1499,9 @@ def chat_stream(request: ChatRequest, http_request: Request, user=Depends(get_us
                     if result.get("chunks"):
                         pdf_context = result["context"]
                     elif not plan.images:
-                        # No relevant PDF information: do not let the LLM
-                        # answer from general knowledge.
-                        fallback = NOT_FOUND
-                        yield _sse({"type": "content", "content": fallback})
-                        _save_message(conversation_id, user, "ASSISTANT", fallback, route=route,
-                                      metadata={"sources": [], "route_reason": route_reason})
-                        yield _sse({"type": "sources", "sources": []})
-                        yield _sse({"type": "done"})
-                        return
+                        # Nothing in the PDF matches: answer from the usual
+                        # sources and say so (see below).
+                        general = True
 
                 except Exception as e:
                     error = str(e)
@@ -1520,17 +1526,42 @@ def chat_stream(request: ChatRequest, http_request: Request, user=Depends(get_us
             yield _sse({"type": "status", "stage": "generating", "label": "Writing the answer"})
 
             full_response = ""
+            answer_stream = None
 
             if pdf_context:
-                # PDF questions: one grounded call that answers only from
-                # the retrieved pages (plus any attached image analysis).
+                # PDF questions: one grounded call that answers from the
+                # retrieved pages (plus any attached image analysis), or
+                # replies NOT_IN_PDF for a general question they don't cover.
                 answer_stream = stream_pdf_answer(
                     query=query,
                     context=pdf_context,
                     chat_history=current_history,
                     image_context="\n\n".join(part for part in tool_parts if part),
                 )
-            else:
+                general, answer_stream = not_in_pdf(answer_stream)
+
+            if general:
+                # Answer from the usual sources (router + tool), saying first
+                # that the PDF does not cover it.
+                decision = route_query(query)
+                route, route_reason = decision.route, decision.reason
+                _set_message_route(user_message_id, route)
+                yield _sse({"type": "route", "route": route, "route_reason": route_reason})
+                tool_parts, sources = [], []
+                if route in SEARCH_AGENTS:
+                    agent, label = SEARCH_AGENTS[route]
+                    yield _sse({"type": "status", "stage": "tool", "label": label})
+                    result = agent(query)
+                    if result.get("error"):
+                        route = "DIRECT"
+                    else:
+                        tool_parts, sources = [result.get("content", "")], result.get("sources", [])
+                note = f"**This isn't covered in your PDF**, so here's an answer from {GENERAL_SOURCES.get(route, 'general knowledge')}:\n\n"
+                full_response = note
+                yield _sse({"type": "content", "content": note})
+                answer_stream = None
+
+            if answer_stream is None:
                 answer_stream = stream_response(
                     query=query,
                     tool_result="\n\n".join(part for part in tool_parts if part),

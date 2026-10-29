@@ -1,6 +1,8 @@
+import re
+
 from langchain_groq import ChatGroq
 
-from config.settings import GROQ_API_KEY, GROQ_MAX_RETRIES, GROQ_TIMEOUT_S
+from config.settings import GROQ_API_KEY, GROQ_MAX_RETRIES, GROQ_REASONING_EFFORT, GROQ_TIMEOUT_S
 from prompts.llm_prompt import LLM_PROMPT
 from utils.logger import log_agent
 
@@ -10,6 +12,7 @@ llm = ChatGroq(
     api_key=GROQ_API_KEY,
     timeout=GROQ_TIMEOUT_S,
     max_retries=GROQ_MAX_RETRIES,
+    reasoning_effort=GROQ_REASONING_EFFORT,
 )
 
 
@@ -35,6 +38,29 @@ def history_lines(chat_history: list | None) -> str:
     )
 
 
+# Words that ask for a full explanation. The prompt says "short unless asked",
+# but the model sometimes misses a request at the end of a long MCQ; this
+# makes the request explicit.
+EXPLAIN_REQUEST = re.compile(
+    r"\b(explain\w*|explanation|step[- ]by[- ]step|steps|in detail|detailed|elaborate|derive|prove|why)\b",
+    re.IGNORECASE,
+)
+
+
+# "Give all questions", "list every MCQ": the short-answer rule made the
+# model skip items, so a request for everything says so explicitly.
+COMPLETE_REQUEST = re.compile(r"\b(all|every|each|full|complete|entire)\b", re.IGNORECASE)
+
+
+def answer_style(query: str) -> str:
+    """A closing line telling the model how long the answer should be."""
+    if COMPLETE_REQUEST.search(query or ""):
+        return "\nThe user asked for everything: include every item, in full and in order; do not skip or summarise.\n"
+    if EXPLAIN_REQUEST.search(query or ""):
+        return "\nThe user asked for an explanation: explain fully, step by step.\n"
+    return "\nAnswer briefly unless the question needs more (rule 7).\n"
+
+
 def build_prompt(
     query: str,
     tool_result: str = "",
@@ -49,7 +75,7 @@ def build_prompt(
     prompt = LLM_PROMPT.format(
         query=query,
         tool_result=clip(tool_result, TOOL_RESULT_CHARS)
-    )
+    ) + answer_style(query)
 
     if history_text:
         prompt = f"""

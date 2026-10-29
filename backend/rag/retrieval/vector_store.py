@@ -96,6 +96,21 @@ def store_chunks(
 # DELETE DOCUMENT
 # ============================================================
 
+def document_chunks_in_order(document_id: str, limit: int = 400) -> list[dict]:
+    """A document's chunks in reading order (for whole-document requests)."""
+
+    return (
+        supabase.table("document_chunks")
+        .select("chunk_index,page_number,content")
+        .eq("document_id", document_id)
+        .order("chunk_index")
+        .limit(limit)
+        .execute()
+        .data
+        or []
+    )
+
+
 def delete_document(
     document_id: str
 ) -> None:

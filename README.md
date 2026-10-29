@@ -98,6 +98,8 @@ Supabase per user.
   model can add a ```` ```chart ```` JSON block, drawn as a bar or line chart
   with tooltips, a legend and a table view (`frontend/charts.js`, no library).
   Only numbers from the retrieved information are allowed.
+- ➗ **Math in answers:** LaTeX formulas (`\( \)` inline, `\[ \]` display) are
+  drawn with KaTeX, loaded from cdnjs with SRI only when an answer has math.
 - 👤 **Accounts:** password, emailed one-time code and Google sign-in through
   Supabase Auth, a welcome email for new accounts, plus profile (display name)
   and settings (theme, voice language, auto-send, change password, log out
@@ -180,9 +182,18 @@ logged on the server and never sent to the client. If Groq's rate limit is hit
 the message says the AI service is busy and to try again in a few seconds.
 
 **PDF questions use one LLM call.** The server retrieves the relevant chunks,
-then streams an answer from the grounded PDF prompt (answer only from the
-retrieved pages, otherwise say it isn't in the PDF). The general-purpose
-answer prompt is not used for PDFs, so it can't add outside knowledge.
+then streams an answer from the grounded PDF prompt:
+
+- facts about the PDF come only from the retrieved pages;
+- questions printed in the PDF (exercises, MCQs) are solved with the model's
+  own knowledge;
+- a question about the document that it doesn't cover ("what does chapter 9
+  say…") gets "I could not find this information in the uploaded PDF.";
+- a *general* question it doesn't cover ("What is the capital of Australia?",
+  "latest AI news") makes the model reply `NOT_IN_PDF`. The server then routes
+  the question as usual (direct, web search, Wikipedia or arXiv) and the answer
+  starts with "**This isn't covered in your PDF**, so here's an answer from
+  …". The same happens when retrieval finds nothing.
 
 **Follow-up questions.** The last 6 messages are passed to the PDF prompt so
 "explain that again" is understood, but only as context, never as a source of
@@ -241,6 +252,13 @@ flowchart TD
   `MAX_OCR_PAGES` (50) per PDF; scanned pages beyond that are reported as
   not searchable.
 - PDFs over `MAX_PDF_PAGES` (300) are rejected up front with a clear message.
+- Requests for the whole document ("give all questions", "list every MCQ",
+  "summarise this PDF") send the full text in page order (up to 12,000
+  characters, with a note when the PDF continues) instead of the best-matching
+  chunks, plus a checklist of the question numbers found, so none are skipped.
+- Asking for a numbered question ("question no 23", "Q23") also reads that question
+  from the rendered page image with the vision model, because text extraction
+  breaks determinants, matrices and stacked fractions (`rag/question_reader.py`).
 - Chunks are embedded and stored 64 at a time, so memory stays flat and no
   single database request grows with the PDF. Measured locally: a 600-page
   PDF (2,400 chunks) peaked at about 310 MB for the whole process.
@@ -635,11 +653,12 @@ frontend/
   about.html              about page
   auth-flows.js           sign-in logic without DOM: email code flow, auth error messages
   charts.js               bar and line charts for chat answers and the admin dashboard
+  math.js                 LaTeX formulas in answers, drawn with KaTeX
   common.js               shared auth/session, sign-in dialog, API client, UI helpers
   style.css pages.css admin.css about.css
   assets/                 logo and icons
 supabase/migrations/      SQL migrations (run in the Supabase SQL editor)
-tests/frontend/           Node unit tests for frontend/auth-flows.js and charts.js
+tests/frontend/           Node unit tests for frontend/auth-flows.js, charts.js and math.js
 ```
 
 <a name="18-prerequisites"></a>
@@ -697,6 +716,7 @@ Defined in `backend/.env` (never committed). The template is
 | `ALLOWED_ORIGINS` | no | CORS origins, only if the frontend is served elsewhere |
 | `MAX_PDF_MB` / `MAX_IMAGE_MB` / `MAX_AUDIO_MB` | no | upload limits (25 / 10 / 25) |
 | `GROQ_TIMEOUT_S` / `GROQ_MAX_RETRIES` | no | Groq request timeout and retries (60 / 2) |
+| `GROQ_REASONING_EFFORT` | no | `low` (default), `medium` or `high`. gpt-oss's hidden reasoning counts as output tokens; at higher effort it used 2,955 of 3,072 output tokens on one request and cut the visible answer off |
 | `GUEST_MESSAGES_PER_HOUR` | no | messages a guest (per guest id and per IP) may send per hour (20; `0` disables guest chat) |
 | `CHAT_MESSAGES_PER_HOUR` / `PDF_UPLOADS_PER_HOUR` / `IMAGE_UPLOADS_PER_HOUR` / `VOICE_REQUESTS_PER_HOUR` | no | per-account hourly limits for signed-in users (60 / 10 / 20 / 30; `0` = no limit). Over the limit the API returns 429 with `Retry-After`. Counted in memory per process. |
 | `WORKER_THREADS` | no | threads for blocking work (200). A streaming answer holds one while it waits on Groq, so this is about how many people can be answered at once |
@@ -851,12 +871,14 @@ The second command runs from the repository root and needs Node.js 18+.
 | `tests/test_welcome_email.py` | welcome email: new password / email-code / Google accounts, no email for existing users, concurrent and repeated requests, provider failures and retries, content, provider payloads, `/auth/me` trigger |
 | `tests/frontend/auth-flows.test.js` | email code flow: request, verify, wrong and expired codes, 600 s countdown, resend and cooldown, rate limits, delivery and network errors, duplicate submissions, no codes in logs |
 | `tests/test_pdf_ocr.py` | text / scanned / mixed PDFs, OCR retries and fallbacks, partial success, rollback, page citations, upload streaming |
-| `tests/test_pdf_chat.py` | PDF questions in the chat stream: one grounded LLM call, "not found" without any LLM call, follow-up search text, history limit, image context, rate-limit message |
+| `tests/test_pdf_chat.py` | PDF questions in the chat stream: one grounded LLM call, general questions the PDF doesn't cover answered from other sources with a note, follow-up search text, history limit, image context, rate-limit message |
 | `tests/test_guest_chat.py` | guest identity, invalid token never downgraded, uploads still need login, guest-only conversation filters, guest chat stream, per-guest/per-IP hourly limit, claiming guest chats (order, filters, empty, invalid id) |
 | `tests/test_attachments_profile.py` | attachment ownership, profile endpoints |
 | `tests/test_large_pdf_and_limits.py` | batched indexing of a 400-chunk PDF, rollback when a batch fails, page cap, waiting for a busy slot, OCR page cap, per-user hourly limits and 429 on chat and uploads |
 | `tests/test_hardening.py` | oversized and size-less request bodies refused, security headers (CSP without inline scripts, Permissions-Policy, HSTS only in production), no inline scripts in pages, worker pool size at startup |
+| `tests/test_whole_document.py` | whole-document requests: detection, full text in order with a question checklist, cut-off note, output budget within the request limit, "include every item" style |
 | `tests/test_charts.py` | chart rules in the answer prompts, per-day dashboard counts (UTC days, empty days, invalid times) |
+| `tests/frontend/math.test.js` | finding LaTeX formulas: inline and display, `$$`, single `$` left as text, code skipped, unclosed formulas while streaming, pipes inside formulas |
 | `tests/frontend/charts.test.js` | chart spec validation (malformed JSON, caps on labels/series/text, number cleaning), axis ticks, number formatting |
 
 Groq and OCR.space are always **mocked** (no credits used), and so are almost

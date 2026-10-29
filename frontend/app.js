@@ -79,7 +79,9 @@ function renderInline(text) {
 
 function renderMarkdown(source) {
     const blocks = [];
-    let text = escapeHTML(source || "");
+    // Formulas are set aside first (see math.js) and drawn by setText().
+    const { text: plain, math } = MathRender.extractMath(source || "");
+    let text = escapeHTML(plain);
 
     text = text.replace(/```([\w+-]*)\n?([\s\S]*?)(```|$)/g, (_, lang, code, end) => {
         // ```chart blocks become placeholders that setText() fills with a
@@ -129,11 +131,13 @@ function renderMarkdown(source) {
         closeTable();
 
         const ul = line.match(/^\s*[-*•]\s+(.*)/);
-        const ol = line.match(/^\s*\d+[.)]\s+(.*)/);
+        const ol = line.match(/^\s*(\d+)[.)]\s+(.*)/);
         if (ul || ol) {
             const tag = ul ? "ul" : "ol";
-            if (list !== tag) { closeList(); out.push(`<${tag}>`); list = tag; }
-            out.push(`<li>${renderInline((ul || ol)[1])}</li>`);
+            // A list split by blank lines or other content restarts; keep the
+            // written number (question 16 stays 16, not 1).
+            if (list !== tag) { closeList(); out.push(ol && ol[1] !== "1" ? `<ol start="${Number(ol[1])}">` : `<${tag}>`); list = tag; }
+            out.push(`<li>${renderInline(ul ? ul[1] : ol[2])}</li>`);
             continue;
         }
         closeList();
@@ -148,7 +152,14 @@ function renderMarkdown(source) {
     closeList();
     closeTable();
 
-    return out.join("").replace(/@@BLOCK(\d+)@@/g, (_, i) => blocks[i]);
+    return out.join("")
+        .replace(/@@BLOCK(\d+)@@/g, (_, i) => blocks[i])
+        .replace(/@@MATH(\d+)@@/g, (token, i) => {
+            const m = math[i];
+            if (!m) return token;
+            const tex = escapeHTML(m.tex);
+            return `<span class="math${m.display ? " math-display" : ""}" data-tex="${tex}">${tex}</span>`;
+        });
 }
 
 async function copyText(text, button) {
@@ -330,7 +341,7 @@ const chat = {
         chat.removeHero();
         const content = el("div", { class: "message-content" }, [
             messageAttachments(attachments),
-            text ? el("div", { class: "message-text", text }) : null,
+            text && !(attachments?.length && HIDDEN_QUESTIONS.has(text)) ? el("div", { class: "message-text", text }) : null,
             el("div", { class: "message-meta", text: chat.timeLabel(time) }),
         ]);
         chat.inner.append(el("div", { class: "message user-message" }, [content]));
@@ -358,6 +369,7 @@ const chat = {
             setText(markdown) {
                 api.text = markdown;
                 body.innerHTML = renderMarkdown(markdown);
+                MathRender.renderIn(body);
                 body.querySelectorAll(".chart-slot[data-chart]").forEach((slot) => {
                     // Reuse the chart already drawn for this JSON, so streaming
                     // text after it doesn't redraw it on every chunk.
@@ -661,12 +673,6 @@ const context = {
         context.render();
     },
 
-    add(files) {
-        const merged = new Map(state.contextFiles.map((f) => [f.fileId, f]));
-        files.forEach((f) => { merged.delete(f.fileId); merged.set(f.fileId, f); });
-        context.set([...merged.values()].slice(-MAX_CONTEXT_FILES));
-    },
-
     render() {
         const bar = $("contextBar");
         if (!state.contextFiles.length) {
@@ -720,11 +726,40 @@ async function ensureConversation(firstMessage) {
     return state.conversationId;
 }
 
+/** The question sent when files are attached but nothing is typed. */
+const DEFAULT_QUESTIONS = {
+    image: "Answer the question in this image. If there is no question, describe the image briefly.",
+    pdf: "Summarise this PDF.",
+    pdfs: "Summarise these PDFs.",
+    mixed: "Explain these files.",
+};
+// Sent for the user but not shown in their bubble (older wordings included,
+// so chats saved before this change look the same).
+const HIDDEN_QUESTIONS = new Set([
+    ...Object.values(DEFAULT_QUESTIONS),
+    "What is in this image? If it shows a question or problem, answer it.",
+    "What is in this image? If it shows a question or problem, solve it step by step.",
+]);
+
+function defaultQuestion(files) {
+    const pdfs = files.filter((f) => f.file_type === "PDF").length;
+    if (pdfs && pdfs < files.length) return DEFAULT_QUESTIONS.mixed;
+    if (pdfs) return pdfs > 1 ? DEFAULT_QUESTIONS.pdfs : DEFAULT_QUESTIONS.pdf;
+    return DEFAULT_QUESTIONS.image;
+}
+
 async function sendMessage(text, { retry = null } = {}) {
     const input = $("userInput");
-    const query = (text ?? input.value).trim();
+    const typed = (text ?? input.value).trim();
 
-    if (!query || state.streaming) return;
+    if (state.streaming) return;
+    if (!typed && !retry && attachments.pending()) {
+        Toast.info("Please wait until your files have finished uploading.");
+        return;
+    }
+    // Files alone can be sent (e.g. a pasted image); the server needs a question.
+    const query = typed || (!retry && attachments.ready().length ? defaultQuestion(attachments.ready()) : "");
+    if (!query) return;
 
     if (!Auth.resolved) { Toast.info("Checking your sign-in…"); return; }
     if (Auth.status === "error") { Toast.error(Auth.error || MESSAGES.authUnavailable); return; }
@@ -743,7 +778,9 @@ async function sendMessage(text, { retry = null } = {}) {
         chat.addUser(query, { attachments: outgoing });
     }
 
-    const contextIds = state.contextFiles.map((f) => f.fileId).filter((id) => !outgoing.some((a) => a.file_id === id));
+    // Earlier PDFs are kept for follow-up questions; a message with new
+    // files is about those files, so the old ones are left out.
+    const contextIds = outgoing.length ? [] : state.contextFiles.map((f) => f.fileId);
 
     const controller = new AbortController();
     setStreaming(controller);
@@ -786,8 +823,11 @@ async function sendMessage(text, { retry = null } = {}) {
             },
         });
 
-        // PDFs sent with this message remain available for follow-ups.
-        context.add(outgoing.filter((a) => a.file_type === "PDF").map((a) => ({ fileId: a.file_id, name: a.filename })));
+        // New files start a new topic: follow-ups use the PDFs sent now (none
+        // after an image-only message), not ones from earlier messages.
+        if (outgoing.length) {
+            context.set(outgoing.filter((a) => a.file_type === "PDF").map((a) => ({ fileId: a.file_id, name: a.filename })));
+        }
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
